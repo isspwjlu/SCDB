@@ -91,3 +91,23 @@ def download_file(client: "Minio", bucket: str, key: str, file_path: str) -> Non
 def _cached_client(endpoint: str, access_key: str, secret_key: str) -> "Minio":
     """Memoised client builder keyed by endpoint+creds (safe per-host cache)."""
     return get_minio_client(endpoint, access_key, secret_key)
+
+
+def upload_submission_pdf(
+    client: "Minio",
+    bucket: str,
+    submission_id: str,
+    file_path: str,
+    original_filename: str,
+    content_type: str | None = None,
+) -> str:
+    """Upload a submission PDF under ``submissions/{id}/{safe_name}``.
+
+    Used by :mod:`superconductor_db.api.submissions` (Task 31). Returns the
+    object key so the caller can persist it on the row. The bucket is created
+    on demand.
+    """
+    safe_name = original_filename.replace("/", "_").replace("\\", "_") or "upload.pdf"
+    key = f"submissions/{submission_id}/{safe_name}"
+    upload_file(client, bucket, key, file_path, content_type=content_type)
+    return key
