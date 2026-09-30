@@ -64,6 +64,7 @@ Live environment after `make up` (out of scope for this run, recorded here for t
 - `curl -fsS http://localhost:8000/health` → `{"status":"ok","db":true,"minio":true}`.
 - `curl -fsS http://localhost:5173/` → HTML containing `<div id="root"></div>`.
 - `make test` runs `backend-test` + `frontend-test` with coverage gates (≥80% backend, ≥70% frontend).
+- `make migrate` and `make seed` are wired in the Makefile but **inert in Phase A** — they call `alembic upgrade head` and `python -m superconductor_db.ingest.supercon_seed`, neither of which lands until Phase B (Tasks 5 and 9 respectively). They will fail with `ModuleNotFoundError` until then.
 
 ## Future phases
 
