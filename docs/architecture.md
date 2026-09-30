@@ -51,11 +51,19 @@ docker compose exec backend pytest --cov=superconductor_db --cov-report=term-mis
 docker compose exec frontend npm run test:coverage
 ```
 
-Code-level checks performed for M1:
+Code-level checks performed for M1 (this batched task, no Docker boot):
 
-- Backend Python compiles cleanly (`python -m py_compile`).
-- Frontend TypeScript strict-mode type-check passes (`tsc --noEmit`).
-- One Conventional Commit per task.
+- `python -m py_compile` on every backend `.py` file → OK.
+- `tsc --noEmit` not run (deps not installed; deferred to CI / `make frontend-test`).
+- `package.json` / `tsconfig.json` validated as well-formed JSON.
+- Four Conventional Commits produced: `chore: monorepo skeleton …`, `feat(backend): fastapi skeleton …`, `feat(frontend): vite + react + ts skeleton …`, and this docs commit.
+
+Live environment after `make up` (out of scope for this run, recorded here for the operator):
+
+- `docker compose ps` should report `postgres`, `minio`, `backend`, `frontend`, `worker` all `healthy`.
+- `curl -fsS http://localhost:8000/health` → `{"status":"ok","db":true,"minio":true}`.
+- `curl -fsS http://localhost:5173/` → HTML containing `<div id="root"></div>`.
+- `make test` runs `backend-test` + `frontend-test` with coverage gates (≥80% backend, ≥70% frontend).
 
 ## Future phases
 
