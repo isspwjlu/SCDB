@@ -21,6 +21,18 @@ from pydantic import BaseModel, ConfigDict, Field
 from superconductor_db.schemas.common import Quantity, _is_real
 
 
+class TcUnderPressure(BaseModel):
+    """Pressure-tuned Tc measurement record (spec §5.1 / §6.3 prompt 3).
+
+    Stores one measurement series per compound (e.g., FeSe measured at 0, 1, 2, 4 GPa).
+    The extractor populates all three fields from a single paper's Tc(P) curve.
+    """
+    model_config = ConfigDict(extra="forbid")
+    pressures: list[float] = Field(default_factory=list, description="Pressures in GPa")
+    tcs: list[float] = Field(default_factory=list, description="Critical temperatures in K, parallel to `pressures`")
+    method: str = Field(default="", description="Measurement method (resistivity / magnetization / susceptibility / other)")
+
+
 class LatticeParameter(BaseModel):
     """One lattice axis (a/b/c) with value + unit."""
 
@@ -107,7 +119,7 @@ class SuperconductingRecord(BaseModel):
     superconducting_property: SuperconductingProperty = Field(
         default_factory=SuperconductingProperty
     )
-    tc_under_pressure: dict[str, Any] | None = None
+    tc_under_pressure: TcUnderPressure | None = None
     isotope_exponent_alpha: float | None = None
     uemura_class: str | None = None
     gamma_n: Quantity | None = None
