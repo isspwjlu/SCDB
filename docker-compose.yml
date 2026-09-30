@@ -68,7 +68,7 @@ services:
         condition: service_healthy
     volumes:
       - cache:/data/cache
-    command: python -m superconductor_db.ingest.worker
+    command: ["sleep", "infinity"]
 
   frontend:
     build:
