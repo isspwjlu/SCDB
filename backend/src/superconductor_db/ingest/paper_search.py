@@ -129,7 +129,7 @@ def is_likely_sc_paper(title: str, abstract: str | None) -> bool:
 # --------------------------------------------------------------------------- #
 
 
-_ARXIV_API = "http://export.arxiv.org/api/query"
+_ARXIV_API = "https://export.arxiv.org/api/query"
 
 
 async def search_arxiv(
