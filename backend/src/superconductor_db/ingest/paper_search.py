@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote_plus
@@ -338,11 +339,7 @@ async def search_semantic_scholar(
 # --------------------------------------------------------------------------- #
 
 
-_SOURCE_FUNCS = {
-    "arxiv": search_arxiv,
-    "crossref": search_crossref,
-    "semantic_scholar": search_semantic_scholar,
-}
+_SOURCE_NAMES = frozenset({"arxiv", "crossref", "semantic_scholar"})
 
 
 async def search_all_sources(
@@ -357,16 +354,22 @@ async def search_all_sources(
     Each source has an independent 60s timeout. Errors from a single source
     are logged and that source's results dropped, so a flaky endpoint can't
     block the worker.
+
+    Functions are looked up at *call time* via ``getattr`` so unit tests can
+    patch ``search_arxiv`` etc. on the module without the dict snapshot
+    going stale.
     """
     if sources is None:
-        sources = tuple(_SOURCE_FUNCS.keys())
-    selected = [s for s in sources if s in _SOURCE_FUNCS]
+        sources = ("arxiv", "crossref", "semantic_scholar")
+    selected = [s for s in sources if s in _SOURCE_NAMES]
     if not selected:
         return []
 
     tasks = []
     for src in selected:
-        func = _SOURCE_FUNCS[src]
+        func = getattr(sys.modules[__name__], f"search_{src}", None)
+        if func is None:
+            continue
         tasks.append(_guarded_search(func, query, max_results, timeout_per_source, src))
     raw_results = await asyncio.gather(*tasks, return_exceptions=False)
     flat: list[PaperMetadata] = []
@@ -384,7 +387,7 @@ async def _guarded_search(
 ) -> list[PaperMetadata]:
     try:
         return await func(query, max_results=max_results, timeout=timeout)
-    except (httpx.HTTPError, asyncio.TimeoutError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 — guarded orchestration; log and skip.
         log.warning("search_all_sources: %s failed: %s", source_name, exc)
         return []
 
@@ -416,9 +419,16 @@ def _deduplicate(papers: list[PaperMetadata]) -> list[PaperMetadata]:
 
 
 def _normalise_title(title: str) -> str:
+    """Canonicalise a paper title for fuzzy dedup.
+
+    Strips trailing punctuation, collapses whitespace, lowercases. Treats
+    "MgB2 Superconductor Study" and "MgB2 Superconductor study." as the
+    same title.
+    """
     if not title:
         return ""
-    return re.sub(r"\s+", " ", title.strip().lower())
+    cleaned = re.sub(r"\s+", " ", title.strip().lower())
+    return cleaned.rstrip(".!?,;:")
 
 
 # Re-export for tests.

@@ -148,18 +148,41 @@ async def test_extract_all_drops_invalid_formula() -> None:
 
 @pytest.mark.unit
 async def test_extract_all_continues_on_partial_failure() -> None:
-    """If one prompt raises, others still flow through."""
+    """If one of the dimension prompts raises, the others still flow through.
+
+    base_sc_props is the prompt that seeds the inclusion gate (Tc, Hc1, Hc2...).
+    If THAT one raises, no record survives — that's correct behaviour, not a
+    bug. To exercise "partial failure → still get a record", we let
+    base_sc_props succeed and let a secondary prompt (pressure_tc) raise.
+    """
+    dimension_payloads = {
+        "base_sc_props": [{"MgB2": {"Tc": {"value": 39, "unit": "K"}}}],
+        "pressure_tc": [{"MgB2": {"pressures": [0, 1], "tcs": [39, 42], "method": "resistivity"}}],
+        "isotope_uemura": [{"MgB2": {"isotope_exponent_alpha": 0.32, "uemura_class": "weak-coupling"}}],
+        "specific_heat": [{"MgB2": {"gamma_n": {"value": 11, "unit": "mJ/mol·K²"},
+                                       "gamma_s": {"value": 14, "unit": "mJ/mol·K²"},
+                                       "debye_temperature": {"value": 800, "unit": "K"}}}],
+        "fermi_resistivity": [{"MgB2": {"fermi_temperature": {"value": 800, "unit": "K"},
+                                          "resistivity_normal": {"value": 5, "unit": "μΩ·cm"}}}],
+        "crystal_structure": [{"MgB2": {"Crystal_Structure": "hexagonal", "Space_Group": "P6/mmm"}}],
+        "preparation": [{"MgB2": {"Synthesis_Method": "solid-state reaction"}}],
+    }
+    builders_in_order = list(dimension_payloads.values())
+    # The dimension that will fail (idx 3 = specific_heat in the parallel batch).
+    fail_index = 3
 
     async def selective(messages):  # noqa: ANN001
-        # 1st call: composition. 2nd call: raise.
         if not hasattr(selective, "n"):
             selective.n = 0
         selective.n += 1
-        if selective.n == 2:
-            raise RuntimeError("simulated prompt failure")
         if selective.n == 1:
             return [{"Material_Chemical_Composition": "MgB2", "Experimental": True}]
-        return [{"MgB2": {"Tc": {"value": 39, "unit": "K"}}}]
+        idx = selective.n - 2  # calls 2..8 map to builders_in_order[0..6]
+        if idx == fail_index:
+            raise RuntimeError("simulated specific_heat failure")
+        if 0 <= idx < len(builders_in_order):
+            return builders_in_order[idx]
+        return []
 
     client = object.__new__(LLMClient)
     client.extract_json = selective  # type: ignore[method-assign]
@@ -167,3 +190,7 @@ async def test_extract_all_continues_on_partial_failure() -> None:
     records = await extractor.extract_all("MgB2 paper")
     assert len(records) == 1
     assert records[0].material_chemical_composition == "MgB2"
+    # Tc survived (base_sc_props succeeded).
+    assert records[0].superconducting_property.Tc.value == 39.0
+    # Inclusion gate passed (Tc is real).
+    assert records[0].has_meaningful_data() is True

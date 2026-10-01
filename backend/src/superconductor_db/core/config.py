@@ -8,6 +8,19 @@ from functools import lru_cache
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Placeholder-looking strings that must NEVER be used as a real jwt_secret.
+# Module-level constant so Pydantic v2 does not treat it as a model attribute
+# (which would become a non-iterable ModelPrivateAttr or trigger a missing-
+# annotation error). Frozen tuple — cannot be mutated at runtime.
+FORBIDDEN_JWT_SECRET_SUBSTRINGS: tuple[str, ...] = (
+    "change_me",
+    "test-secret-please-change",
+    "placeholder",
+    "please-change",
+    "replace_me",
+    "your-secret",
+)
+
 
 class Settings(BaseSettings):
     """Backend settings. Env vars are read by exact field name (no prefix)."""
@@ -40,15 +53,7 @@ class Settings(BaseSettings):
     cookie_secure: bool = Field(default=False)
 
     # Placeholder-looking strings that must NEVER be used as a real jwt_secret.
-    # The list is intentionally a tuple (frozen) so it cannot be mutated at runtime.
-    _FORBIDDEN_JWT_SECRET_SUBSTRINGS: tuple[str, ...] = (
-        "change_me",
-        "test-secret-please-change",
-        "placeholder",
-        "please-change",
-        "replace_me",
-        "your-secret",
-    )
+    # Defined at module level above (FORBIDDEN_JWT_SECRET_SUBSTRINGS).
 
     @field_validator("jwt_secret")
     @classmethod
@@ -73,7 +78,7 @@ class Settings(BaseSettings):
                 "to generate one."
             )
         lowered = v.lower()
-        for needle in cls._FORBIDDEN_JWT_SECRET_SUBSTRINGS:
+        for needle in FORBIDDEN_JWT_SECRET_SUBSTRINGS:
             if needle in lowered:
                 raise ValueError(
                     f"JWT_SECRET looks like a placeholder (contains '{needle}'). "

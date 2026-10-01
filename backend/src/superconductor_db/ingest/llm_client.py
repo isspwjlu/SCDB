@@ -50,12 +50,16 @@ _PYTHON_LITERAL_RE = re.compile(r"\b(None|True|False)\b")
 
 
 def _strip_wrappers(text: str) -> str:
-    """Drop ``<think>`` blocks and ``\`\`\`json\`\`\`` fences."""
+    """Drop ``<think>`` blocks and ``\`\`\`json\`\`\`` fences.
+
+    Returns the first complete fenced block's contents if one is present;
+    otherwise returns the text with think blocks removed.
+    """
     text = _THINK_RE.sub("", text)
-    # If the response is a single fenced block, unwrap it.
-    fenced = _CODE_FENCE_RE.findall(text)
-    if fenced and len(fenced) == 1 and "```" not in text.replace(fenced[0], ""):
-        text = fenced[0]
+    # Unwrap the first complete fenced block (e.g. ```json\n[...]\n```).
+    match = _CODE_FENCE_RE.search(text)
+    if match:
+        return match.group(1).strip()
     return text.strip()
 
 
