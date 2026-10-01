@@ -102,9 +102,10 @@ def _sanitize_url(url: str) -> str:
 
 
 async def _run_scansci(args: list[str], *, timeout: float = 180.0) -> dict[str, Any]:
-    """Run the scansci-pdf CLI with ``args`` and parse its JSON stdout.
+    """Run the scansci-pdf CLI with ``args`` and parse its output.
 
-    Returns the parsed JSON dict. Raises :class:`ScanSciError` on failure.
+    The CLI's ``get`` command writes ``OK: <absolute-path>`` on success
+    (no JSON). Older revisions emitted JSON. We accept both formats.
     """
     settings = get_settings()
     bin_path = settings.scansci_pdf_bin
@@ -134,14 +135,29 @@ async def _run_scansci(args: list[str], *, timeout: float = 180.0) -> dict[str, 
             f"scansci-pdf exited {proc.returncode}: {stderr or stdout[:200]}"
         )
 
-    # scansci-pdf emits one JSON object on stdout. Try to extract it even if
-    # the tool wrote some leading/trailing lines (be liberal).
+    # Try JSON first (older revisions), then fall back to the
+    # "OK: <path>" text format used by the current CLI.
     payload = _extract_json(stdout)
     if payload is None:
+        payload = _parse_ok(stdout)
+    if payload is None:
         raise ScanSciError(
-            f"scansci-pdf returned no parseable JSON. stderr={stderr[:200]}"
+            f"scansci-pdf returned no parseable output. stdout={stdout[:200]} stderr={stderr[:200]}"
         )
     return payload
+
+
+_OK_PATH_RE = re.compile(r"OK:\s*(?P<path>\S+)", re.IGNORECASE)
+
+
+def _parse_ok(stdout: str) -> dict[str, Any] | None:
+    """Parse the current scansci-pdf ``get`` text output: ``OK: <path> ...``."""
+    if not stdout:
+        return None
+    m = _OK_PATH_RE.search(stdout)
+    if not m:
+        return None
+    return {"path": m.group("path"), "raw": stdout}
 
 
 def _extract_json(stdout: str) -> dict[str, Any] | None:
@@ -214,7 +230,7 @@ async def download_pdf(
         return cached_path
 
     payload = await _run_scansci(
-        ["smart_download", "--doi", doi, "--output-dir", str(cache_dir)],
+        ["get", doi, "--output", str(cache_dir)],
         timeout=timeout,
     )
     path_str = payload.get("path")
@@ -258,7 +274,7 @@ async def download_pdf_from_url(
         return cached_path
 
     payload = await _run_scansci(
-        ["smart_download", "--url", url, "--output-dir", str(cache_dir)],
+        ["get", url, "--output", str(cache_dir)],
         timeout=timeout,
     )
     path_str = payload.get("path") or payload.get("file") or payload.get("local_path")

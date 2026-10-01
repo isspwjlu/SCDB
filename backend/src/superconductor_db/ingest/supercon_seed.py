@@ -215,7 +215,18 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     settings = get_settings()
-    engine = get_engine(settings.postgres_dsn or _sync_dsn(settings))
+    # Honour DATABASE_URL override (SQLite dev) before falling back to
+    # the legacy postgres_* fields. This mirrors ``get_db()`` in
+    # ``core.db`` so the seed loader connects to the same DB as the API.
+    dsn = (
+        settings.database_url
+        or settings.postgres_dsn
+        or _sync_dsn(settings)
+    )
+    engine = get_engine(
+        dsn,
+        connect_args={"check_same_thread": False} if dsn.startswith("sqlite") else {},
+    )
 
     total_inserted = 0
     total_seen = 0
