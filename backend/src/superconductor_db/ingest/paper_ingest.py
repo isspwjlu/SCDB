@@ -114,6 +114,7 @@ async def ingest_one(
             if tc is None or not isinstance(tc, (int, float)):
                 log.debug("  skip %s — no numeric Tc (skipping)", comp)
                 continue
+            doi = (r.doi or "").strip()
             # Dedup key: (composition, Tc).
             #   MgB2 at Tc=39K is the canonical value — every paper
             #   reports it because that IS the value. We don't need 22
