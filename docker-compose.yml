@@ -69,6 +69,12 @@ services:
     volumes:
       - cache:/data/cache
     command: ["python", "-m", "superconductor_db.ingest.worker"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import sys; sys.exit(0)' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   frontend:
     build:
