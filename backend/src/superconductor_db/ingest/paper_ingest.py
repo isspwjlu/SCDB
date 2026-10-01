@@ -126,14 +126,118 @@ async def ingest_one(
                     comp,
                 )
                 continue
-            existing = s.execute(
-                select(Material.id).where(
+            existing_row = s.execute(
+                select(Material).where(
                     Material.chemical_composition == comp,
                     Material.doi == doi,
                 ).limit(1)
             ).first()
-            if existing is not None:
-                log.info("  skip %s — already in DB for DOI %s", comp, doi)
+            if existing_row is not None:
+                # Field-level merge: NULL columns in the existing row are
+                # filled by the freshly-extracted values. Non-NULL values
+                # are preserved (later extraction may be less complete than
+                # earlier — we keep the best). This means re-running an
+                # extraction over the same paper *fills in* missing fields
+                # rather than overwriting good data.
+                existing = existing_row[0]
+                changed = False
+                new_pair = {
+                    "tc_unit": (sp.Tc.unit if sp.Tc else None) or None,
+                    "superconductor_family": (
+                        sp.Superconductor_Family
+                        if sp.Superconductor_Family and sp.Superconductor_Family != "NA"
+                        else None
+                    ),
+                    "mechanism": (
+                        sp.Mechanism if sp.Mechanism and sp.Mechanism != "NA" else None
+                    ),
+                    "pairing_symmetry": (
+                        sp.Pairing_Symmetry
+                        if sp.Pairing_Symmetry and sp.Pairing_Symmetry != "NA"
+                        else None
+                    ),
+                    "sc_type": sp.Type if sp.Type and sp.Type != "NA" else None,
+                    "hc2_value": (r.hc2_value or None) if hasattr(r, "hc2_value") else None,
+                    "hc2_unit": (r.hc2_unit or None) if hasattr(r, "hc2_unit") else None,
+                    "critical_current_density_value": (
+                        (r.critical_current_density_value or None)
+                        if hasattr(r, "critical_current_density_value")
+                        else None
+                    ),
+                    "critical_current_density_unit": (
+                        (r.critical_current_density_unit or None)
+                        if hasattr(r, "critical_current_density_unit")
+                        else None
+                    ),
+                    "crystal_structure": r.crystal_structure if hasattr(r, "crystal_structure") else None,
+                    "space_group": r.space_group if hasattr(r, "space_group") else None,
+                    "lattice_a_value": (
+                        r.lattice_a_value if hasattr(r, "lattice_a_value") else None
+                    ),
+                    "lattice_a_unit": (
+                        r.lattice_a_unit if hasattr(r, "lattice_a_unit") else None
+                    ),
+                    "lattice_b_value": (
+                        r.lattice_b_value if hasattr(r, "lattice_b_value") else None
+                    ),
+                    "lattice_b_unit": (
+                        r.lattice_b_unit if hasattr(r, "lattice_b_unit") else None
+                    ),
+                    "lattice_c_value": (
+                        r.lattice_c_value if hasattr(r, "lattice_c_value") else None
+                    ),
+                    "lattice_c_unit": (
+                        r.lattice_c_unit if hasattr(r, "lattice_c_unit") else None
+                    ),
+                    "synthesis_method": (
+                        r.synthesis_method if hasattr(r, "synthesis_method") else None
+                    ),
+                    "chemical_precursors": (
+                        r.chemical_precursors if hasattr(r, "chemical_precursors") else None
+                    ),
+                    "synthesis_temperature_value": (
+                        r.synthesis_temperature_value
+                        if hasattr(r, "synthesis_temperature_value")
+                        else None
+                    ),
+                    "synthesis_temperature_unit": (
+                        r.synthesis_temperature_unit
+                        if hasattr(r, "synthesis_temperature_unit")
+                        else None
+                    ),
+                    "synthesis_atmosphere": (
+                        r.synthesis_atmosphere if hasattr(r, "synthesis_atmosphere") else None
+                    ),
+                    "substrate": r.substrate if hasattr(r, "substrate") else None,
+                    "isotope_exponent_alpha": (
+                        r.isotope_exponent_alpha
+                        if hasattr(r, "isotope_exponent_alpha")
+                        else None
+                    ),
+                    "tc_under_pressure": (
+                        r.tc_under_pressure if hasattr(r, "tc_under_pressure") else None
+                    ),
+                    "additional_details": (
+                        r.additional_details if hasattr(r, "additional_details") else None
+                    ),
+                    "updated_at": datetime.now(timezone.utc),
+                }
+                for attr, new_val in new_pair.items():
+                    cur = getattr(existing, attr)
+                    if cur is None and new_val is not None:
+                        setattr(existing, attr, new_val)
+                        changed = True
+                if changed:
+                    s.commit()
+                    log.info(
+                        "  merged fields for %s (DOI %s) — no new row",
+                        comp, doi,
+                    )
+                else:
+                    log.info(
+                        "  skip %s DOI=%s — already complete in DB",
+                        comp, doi,
+                    )
                 continue
             m = Material(
                 id=uuid.uuid4(),
