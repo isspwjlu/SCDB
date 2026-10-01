@@ -132,6 +132,13 @@ _COMPOUND_PATTERNS: tuple[str, ...] = (
     r"FeSe0?\.95Te0?\.05",
     r"FeTe\d?\.?\d*",
 
+    # Ruthenates
+    r"Sr2RuO4",
+    r"Sr2RuO3",  # not SC but sometimes mentioned
+    r"Ca2RuO4",
+    r"Barium ruthenate",
+    r"Sr3Ru2O7",
+
     # Iron-based — 1111 under pressure (don't have separate handling)
     r"(La|Sm|Nd)FeAsO\dF\d?",
 
