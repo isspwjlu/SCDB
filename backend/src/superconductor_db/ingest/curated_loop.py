@@ -52,9 +52,11 @@ logging.basicConfig(
 )
 
 
-# Curated arXiv IDs across major SC families. Verified to exist via
-# arXiv.org listing. Add to this list as new papers are validated.
+# Curated arXiv IDs + journal DOIs across major SC families. Verified
+# to exist via arXiv listing + OpenAlex. Add to this list as new papers
+# are validated.
 CURATED_ARXIV_IDS: tuple[str, ...] = (
+    # ----- arXiv preprints (scansci-pdf resolves via arXiv ID) -----
     # FeSe / iron-based 11 family
     "10.48550/arXiv.cond-mat/0212371",
     "10.48550/arXiv.cond-mat/0910.2724",
@@ -63,6 +65,7 @@ CURATED_ARXIV_IDS: tuple[str, ...] = (
     # MgB2
     "10.48550/arXiv.cond-mat/0303027",
     "10.48550/arXiv.cond-mat/0311391",
+    "10.48550/arXiv.cond-mat/0404579",  # MgB2 anisotropy
     # Cuprates (ARPES / phase diagram)
     "10.48550/arXiv.cond-mat/0610549",  # Bi-2212
     "10.48550/arXiv.1009.4336",          # ARPES review
@@ -70,21 +73,41 @@ CURATED_ARXIV_IDS: tuple[str, ...] = (
     "10.48550/arXiv.cond-mat/0207628",  # heavy-fermion / cuprate
     "10.48550/arXiv.cond-mat/0203048",
     "10.48550/arXiv.cond-mat/0404296",  # YBCO ARPES
-    # Heavy-fermion
     "10.48550/arXiv.cond-mat/0305063",  # Sr2RuO4
+    # Heavy-fermion
     "10.48550/arXiv.cond-mat/0402681",  # PrOs4Sb12
     "10.48550/arXiv.cond-mat/0509231",
     "10.48550/arXiv.cond-mat/0511420",
     "10.48550/arXiv.cond-mat/9609047",  # UPt3
     "10.48550/arXiv.cond-mat/9907285",
-    "10.48550/arXiv.cond-mat/0106198",  # Sr2RuO4 (older)
-    "10.48550/arXiv.cond-mat/0305063",
-    "10.48550/arXiv.1609.05858",       # YbAl3 / heavy-fermion
+    "10.48550/arXiv.cond-mat/0106198",
+    "10.48550/arXiv.1609.05858",       # YbAl3
     # Iron pnictides 1111
     "10.48550/arXiv.cond-mat/0807.2459",  # SmFeAsO1-x Fx
-    # Conventional / A15
-    "10.48550/arXiv.cond-mat/0506184",
-    "10.48550/arXiv.cond-mat/0307128",  # MgB2 review
+
+    # ----- journal DOIs (scansci-pdf resolves via DOI) -----
+    # MgB2 / conventional
+    "10.1063/1.1413729",   # MgB2 single-crystal anisotropy (2001)
+    "10.1103/physrevlett.88.167004",   # MgB2 T/H anisotropy (2002)
+    "10.1103/physrevb.63.220503",     # MgB2 magnetoresistivity + Hc2 (2001)
+    "10.1038/35065559",   # MgB2 strong links (2001)
+    "10.1038/nature00898", # MgB2 origin of anomalous SC (2002)
+    # Iron pnictides
+    "10.1103/physrevlett.101.117004",  # Co-doped BaFe2As2 Tc=22K (2008)
+    "10.1038/nmat2721",   # Co-doped BaFe2As2 thin films (2010)
+    "10.1088/0953-2048/21/11/115016",   # Co-doped SmFeAsO (2008)
+    # Heavy-fermion
+    "10.1103/physrevlett.86.2653",     # Sr2RuO4 gap structure (2001)
+    "10.1103/physrevlett.87.057001",   # Sr2RuO4 interband proximity (2001)
+    "10.1103/physrevlett.90.117001",   # PrOs4Sb12 multi-phase SC (2003)
+    # FeSe on SrTiO3 (interface SC at 65K)
+    "10.1038/nmat4153",   # single-layer FeSe on SrTiO3 (2014)
+    # Conventional / A15 / NbTi
+    "10.1103/physrevb.75.054105",      # Nb3Sn diffusion (2007)
+    "10.1109/tasc.2009.2019096",       # NbTi critical current interlaboratory (2009)
+    "10.1088/0953-2048/18/3/013",      # Nb3Al strain (2005)
+    # CaAlSi, Sr2RuO4 reviews
+    "10.1103/physrevb.69.180511",      # PrOs4Sb12 quadrupolar (2004)
 )
 
 
