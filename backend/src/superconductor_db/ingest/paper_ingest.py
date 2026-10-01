@@ -115,19 +115,25 @@ async def ingest_one(
                 log.debug("  skip %s — no numeric Tc (skipping)", comp)
                 continue
             doi = (r.doi or "").strip()
-            # Dedup key: (composition, Tc).
-            #   MgB2 at Tc=39K is the canonical value — every paper
-            #   reports it because that IS the value. We don't need 22
-            #   duplicate rows of the same number; collapse them all into
-            #   the canonical record (the earliest inserted one).
+            # Dedup by DOI only. Multiple papers reporting the same
+            # compound at the same Tc are distinct evidence rows
+            # (independent measurements, different papers) and must
+            # be preserved. Re-extracting the SAME paper on the same
+            # compound collapses via the DOI match.
+            if not doi:
+                log.debug(
+                    "  skip %s — paper has no DOI (skipping to avoid dedup gap)",
+                    comp,
+                )
+                continue
             existing = s.execute(
                 select(Material.id).where(
                     Material.chemical_composition == comp,
-                    Material.tc_value == float(tc),
+                    Material.doi == doi,
                 ).limit(1)
             ).first()
             if existing is not None:
-                log.info("  skip %s Tc=%s — already in DB", comp, tc)
+                log.info("  skip %s — already in DB for DOI %s", comp, doi)
                 continue
             m = Material(
                 id=uuid.uuid4(),
