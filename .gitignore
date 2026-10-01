@@ -17,4 +17,5 @@ htmlcov/
 .idea/
 seeds/supercon.csv
 data/cache/
-data/uploads/
+data/uploads/backend/src/*.egg-info/
+*.egg-info/
