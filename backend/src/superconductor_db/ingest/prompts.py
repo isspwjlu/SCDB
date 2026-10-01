@@ -40,13 +40,29 @@ COMPOSITION_SYSTEM_PROMPT: str = (
 )
 
 BASE_SC_PROPS_SYSTEM_PROMPT: str = (
-    "You extract superconductor property measurements. Return STRICT JSON "
-    "(no prose). The output is an OBJECT keyed by composition formula "
-    "(Material_Chemical_Composition); each value is an object with optional "
-    "keys: 'Tc', 'T_CDW', 'Hc1', 'Hc2', 'Energy_Gap', 'Coherence_Length', "
-    "'Penetration_Depth', 'Critical_Current_Density'. Each value is an "
-    "OBJECT {'value': <number or 'NA'>, 'unit': <string>}. Use 'NA' for "
-    "missing values. Use sensible units (K, T, meV, nm, A/cm^2). Never guess."
+    "You extract superconductor property measurements from a research paper. "
+    "Return STRICT JSON (no prose, no commentary). The output is an OBJECT "
+    "keyed by composition formula (Material_Chemical_Composition); each value "
+    "is an object with optional keys: 'Tc', 'T_CDW', 'Hc1', 'Hc2', "
+    "'Energy_Gap', 'Coherence_Length', 'Penetration_Depth', "
+    "'Critical_Current_Density'. Each value is an OBJECT "
+    "{'value': <number or 'NA'>, 'unit': <string>}. Use 'NA' for missing values. "
+    "Use sensible units (K, T, meV, nm, A/cm^2). Never guess.\n\n"
+    "IMPORTANT — extraction rules:\n"
+    "1. Read the ENTIRE paper text including every table cell, figure "
+    "   caption, and footnote. Tables are the richest source — extract "
+    "   *every* numeric value you can attribute to the compound.\n"
+    "2. If the paper states 'Tc = 39 K' for MgB2 in one paragraph and later "
+    "   has a table giving 'Hc2(0) = 14 T', include BOTH.\n"
+    "3. Look in experimental sections (Results, Discussion) and in summary "
+    "   tables. Method sections (Sample preparation, Synthesis) also "
+    "   yield data.\n"
+    "4. Do NOT copy values from references/citations to OTHER papers — "
+    "   those belong to the cited work, not to the paper being extracted.\n"
+    "5. If a value truly is not in the paper (not just hard to find), use "
+    "   'NA' — never fabricate.\n"
+    "6. Numbers in tables sometimes lack a unit; infer from context "
+    "   (e.g. column header 'T_c (K)' implies Kelvin)."
 )
 
 PRESSURE_TC_SYSTEM_PROMPT: str = (
