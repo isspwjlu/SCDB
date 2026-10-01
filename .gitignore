@@ -19,3 +19,6 @@ seeds/supercon.csv
 data/cache/
 data/uploads/backend/src/*.egg-info/
 *.egg-info/
+
+# superpowers plan workspace (ephemeral)
+.superpowers/
