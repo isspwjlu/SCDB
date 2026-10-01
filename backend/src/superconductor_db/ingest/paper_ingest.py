@@ -114,29 +114,19 @@ async def ingest_one(
             if tc is None or not isinstance(tc, (int, float)):
                 log.debug("  skip %s — no numeric Tc (skipping)", comp)
                 continue
-            # Dedup by (composition, doi). Two papers reporting the same
-            # compound at different Tcs are different records (the whole
-            # point of ingesting from multiple papers). Two records from
-            # the same paper (same DOI) for the same compound collapse.
-            doi = (r.doi or "").strip()
-            if doi:
-                existing = s.execute(
-                    select(Material.id).where(
-                        Material.chemical_composition == comp,
-                        Material.doi == doi,
-                    ).limit(1)
-                ).first()
-            else:
-                # No DOI — fall back to source identity so the same paper
-                # can re-extract the same compound without spamming rows.
-                existing = s.execute(
-                    select(Material.id).where(
-                        Material.chemical_composition == comp,
-                        Material.source == "paper_ingest",
-                    ).limit(1)
-                ).first()
+            # Dedup key: (composition, Tc).
+            #   MgB2 at Tc=39K is the canonical value — every paper
+            #   reports it because that IS the value. We don't need 22
+            #   duplicate rows of the same number; collapse them all into
+            #   the canonical record (the earliest inserted one).
+            existing = s.execute(
+                select(Material.id).where(
+                    Material.chemical_composition == comp,
+                    Material.tc_value == float(tc),
+                ).limit(1)
+            ).first()
             if existing is not None:
-                log.info("  skip %s — already in DB", comp)
+                log.info("  skip %s Tc=%s — already in DB", comp, tc)
                 continue
             m = Material(
                 id=uuid.uuid4(),
