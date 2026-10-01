@@ -47,6 +47,7 @@ from superconductor_db.ingest.scansci_wrapper import (
     download_pdf,
     parse_pdf_to_markdown,
 )
+from superconductor_db.ingest.whitelist import is_known_superconductor
 
 log = logging.getLogger("paper_ingest")
 logging.basicConfig(
@@ -92,12 +93,22 @@ async def ingest_one(
 
     # 4. Upsert into materials table.
     stored = 0
+    skipped_hallucination = 0
     with session_factory() as s:
         for r in records:
             if not r.has_meaningful_data():
                 log.info("  skip %s — no SC quantity", r.material_chemical_composition)
                 continue
             comp = r.material_chemical_composition
+            # Whitelist guard: LLM sometimes hallucinates non-SC
+            # compositions (e.g. V2O3 mentioned in a reference list).
+            if not is_known_superconductor(comp):
+                log.warning(
+                    "  skip %s — not on SC whitelist (likely LLM hallucination)",
+                    comp,
+                )
+                skipped_hallucination += 1
+                continue
             sp = r.superconducting_property
             tc = sp.Tc.value
             existing = s.execute(
@@ -135,6 +146,10 @@ async def ingest_one(
             stored += 1
             log.info("  + %s Tc=%s", comp, tc)
         s.commit()
+    log.info(
+        "  extracted=%d stored=%d skipped_hallucination=%d",
+        len(records), stored, skipped_hallucination,
+    )
     return len(records), stored
 
 

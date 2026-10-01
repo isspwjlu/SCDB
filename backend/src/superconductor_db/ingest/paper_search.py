@@ -194,7 +194,12 @@ def _parse_arxiv_atom(body: str) -> list[PaperMetadata]:
 
 
 def _xml_text(entry: str, tag: str) -> str | None:
-    m = _ARXIV_TEXT_RE.search(rf"<{tag}[^>]*>(.*?)</{tag}>", entry)
+    # Use the compiled regex (which uses a backreference) by constructing the
+    # same pattern here; passing the entry directly avoids the
+    # ``Pattern.search(pattern_str, string)`` confusion that would treat
+    # ``entry`` as the ``pos`` arg.
+    pattern = re.compile(rf"<{tag}[^>]*>(.*?)</{tag}>", re.DOTALL)
+    m = pattern.search(entry)
     if not m:
         return None
     return m.group(1).strip()
