@@ -85,6 +85,11 @@ class IngestJob(Base):
     id: Mapped[int] = mapped_column(
         BigInteger, primary_key=True, autoincrement=True
     )
+    run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("ingest_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     query: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(
         String, nullable=False, server_default="pending"

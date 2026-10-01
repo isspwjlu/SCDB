@@ -215,10 +215,14 @@ def _sync_dsn(settings: Settings) -> str:
 def _run_id_for_job(db: Session, job_id: int) -> Any:
     """Return the :class:`IngestRun` id currently driving this job.
 
-    Workers use a single open run; admin-triggered runs create the run row
-    ahead of job insertion. In the absence of an explicit linkage, we
-    return the most-recent ``running`` run (best effort).
+    Jobs created by the admin endpoint carry an explicit ``run_id`` FK.
+    Older jobs predating the migration column may have ``run_id IS NULL``;
+    for those we fall back to the most-recent ``running`` run, and finally
+    create an ad-hoc run so the counters still update somewhere.
     """
+    job = db.get(IngestJob, job_id)
+    if job is not None and job.run_id is not None:
+        return job.run_id
     row = db.execute(
         text(
             """
