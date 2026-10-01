@@ -108,6 +108,24 @@ CURATED_ARXIV_IDS: tuple[str, ...] = (
     "10.1088/0953-2048/18/3/013",      # Nb3Al strain (2005)
     # CaAlSi, Sr2RuO4 reviews
     "10.1103/physrevb.69.180511",      # PrOs4Sb12 quadrupolar (2004)
+
+    # ----- high-pressure superhydride SCs (Tc up to 250K) -----
+    "10.1038/s41586-019-1201-8",        # LaH10 Tc=250K (2019)
+    "10.1038/s41586-020-1955-z",        # LaH10 quantum crystal structure (2020)
+    "10.1038/s41467-019-12326-y",      # CeH9 clathrate (2019)
+    "10.1038/s41467-019-11330-6",      # CeH9 polyhydride (2019)
+    "10.1038/srep09948",               # YH6 (2015)
+    "10.1103/physrevlett.114.157004",   # H3S first principles (2015)
+    "10.1038/nature17175",              # H3S quantum symmetrization (2016)
+    "10.1103/physrevlett.119.107001",   # rare-earth hydrides (2017)
+
+    # ----- modern unconventional SC families (2018-2022) -----
+    "10.1038/s41586-019-1496-5",        # infinite-layer nickelate (2019)
+    "10.1038/s41563-019-0585-z",       # parent compound NdNiO2 (2020)
+    "10.1038/nature26160",              # magic-angle graphene (2018)
+    "10.1103/physrevlett.122.257002",   # twisted bilayer graphene (2019)
+    "10.1103/physrevb.95.180505",       # BiS2 superconductor (2017)
+    "10.1038/nature22060",              # FeSe monolayer (2018, followup to nmat4153)
 )
 
 
