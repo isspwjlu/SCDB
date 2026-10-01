@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -32,6 +33,15 @@ from typing import Any
 from superconductor_db.core.config import Settings, get_settings
 
 log = logging.getLogger(__name__)
+
+# Strict allowlist for DOI characters: alphanumerics, plus the DOI
+# punctuation ``. / : - _``. Reject anything else (control chars, shell
+# metacharacters, whitespace) before passing to the subprocess.
+_SAFE_DOI = re.compile(r"^[0-9A-Za-z./:_\-]+$")
+
+# URL allowlist is broader: scheme + path/query characters. We still reject
+# whitespace, control chars, and shell metacharacters.
+_SAFE_URL = re.compile(r"^[0-9A-Za-z./:_\-?=&%#~+@!,;()]+$")
 
 
 class ScanSciError(RuntimeError):
@@ -60,6 +70,30 @@ def _url_cache_key(url: str) -> str:
 
 def _cached_pdf_path(cache_dir: Path, key: str) -> Path:
     return cache_dir / f"{key}.pdf"
+
+
+def _sanitize_doi(doi: str) -> str:
+    """Strip control chars + reject any character outside the DOI allowlist.
+
+    The sanitised value is safe to pass as a ``--doi`` argument to the
+    scansci-pdf subprocess (no shell quoting issues, no path traversal).
+    """
+    cleaned = re.sub(r"[\x00-\x1f\x7f]", "", doi)
+    if not _SAFE_DOI.match(cleaned):
+        raise ValueError(f"unsafe DOI identifier: {doi!r}")
+    return cleaned
+
+
+def _sanitize_url(url: str) -> str:
+    """Strip control chars + reject any character outside the URL allowlist.
+
+    The URL form is broader than the DOI form (allows ``? & = % #`` etc.)
+    but still rejects whitespace and shell metacharacters.
+    """
+    cleaned = re.sub(r"[\x00-\x1f\x7f]", "", url)
+    if not _SAFE_URL.match(cleaned):
+        raise ValueError(f"unsafe URL identifier: {url!r}")
+    return cleaned
 
 
 # --------------------------------------------------------------------------- #
@@ -170,6 +204,7 @@ async def download_pdf(
     Returns the local cache path. Reuses an existing cached file when present
     (DOI-keyed SHA-256 in ``settings.pdf_cache_dir``).
     """
+    doi = _sanitize_doi(doi)
     settings = settings or get_settings()
     cache_dir = _ensure_dir(Path(settings.pdf_cache_dir))
     key = _doi_cache_key(doi)
@@ -213,6 +248,7 @@ async def download_pdf_from_url(
     timeout: float = 180.0,
 ) -> Path:
     """Download the PDF at ``url`` via scansci-pdf (``--url`` flag)."""
+    url = _sanitize_url(url)
     settings = settings or get_settings()
     cache_dir = _ensure_dir(Path(settings.pdf_cache_dir))
     key = _url_cache_key(url)
