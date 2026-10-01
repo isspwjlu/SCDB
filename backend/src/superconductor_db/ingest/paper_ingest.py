@@ -110,13 +110,31 @@ async def ingest_one(
                 skipped_hallucination += 1
                 continue
             sp = r.superconducting_property
-            tc = sp.Tc.value
-            existing = s.execute(
-                select(Material.id).where(
-                    Material.chemical_composition == comp,
-                    Material.source == "paper_ingest",
-                ).limit(1)
-            ).first()
+            tc = sp.Tc.value if sp.Tc else None
+            if tc is None or not isinstance(tc, (int, float)):
+                log.debug("  skip %s — no numeric Tc (skipping)", comp)
+                continue
+            # Dedup by (composition, doi). Two papers reporting the same
+            # compound at different Tcs are different records (the whole
+            # point of ingesting from multiple papers). Two records from
+            # the same paper (same DOI) for the same compound collapse.
+            doi = (r.doi or "").strip()
+            if doi:
+                existing = s.execute(
+                    select(Material.id).where(
+                        Material.chemical_composition == comp,
+                        Material.doi == doi,
+                    ).limit(1)
+                ).first()
+            else:
+                # No DOI — fall back to source identity so the same paper
+                # can re-extract the same compound without spamming rows.
+                existing = s.execute(
+                    select(Material.id).where(
+                        Material.chemical_composition == comp,
+                        Material.source == "paper_ingest",
+                    ).limit(1)
+                ).first()
             if existing is not None:
                 log.info("  skip %s — already in DB", comp)
                 continue
@@ -141,6 +159,7 @@ async def ingest_one(
                 sc_type=sp.Type if sp.Type and sp.Type != "NA" else None,
                 source="paper_ingest",
                 experimental=True,
+                doi=doi or None,
             )
             s.add(m)
             stored += 1
