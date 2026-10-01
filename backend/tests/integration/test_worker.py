@@ -31,6 +31,28 @@ from superconductor_db.db.models.material import Material
 from superconductor_db.ingest.runner import run_job
 
 
+@pytest.fixture
+def db_session() -> Any:
+    """Per-test in-memory SQLite session for the worker integration test."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    import superconductor_db.db.models  # noqa: F401 — register tables
+    from superconductor_db.db import Base
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    try:
+        yield session
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def _stub_records() -> list[dict[str, Any]]:
     """A single synthetic record mimicking what the LLM extractor would return."""
     return [

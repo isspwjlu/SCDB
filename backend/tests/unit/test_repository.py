@@ -33,6 +33,9 @@ def session() -> Iterator[Session]:
 
 
 def _seed(session: Session, composition: str, **kwargs) -> Material:
+    # Default ``tc_value=1.0`` so the ``has_some_data`` CheckConstraint
+    # passes when the test doesn't otherwise set a scalar SC quantity.
+    kwargs.setdefault("tc_value", 1.0)
     m = Material(chemical_composition=composition, source="unit-test", **kwargs)
     session.add(m)
     session.commit()

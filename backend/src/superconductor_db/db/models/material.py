@@ -34,8 +34,9 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from superconductor_db.db.types import GUID, JSONType
 from sqlalchemy.orm import Mapped, mapped_column
 
 from superconductor_db.db.base import Base
@@ -48,14 +49,14 @@ class Material(Base):
 
     # --- Identification -----------------------------------------------------
     id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        GUID(),
         primary_key=True,
-        server_default=func.gen_random_uuid(),
+        default=lambda: uuid.uuid4(),
     )
     chemical_composition: Mapped[str] = mapped_column(Text, nullable=False)
     doi: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     paper_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PG_UUID(as_uuid=True),
+        GUID(),
         ForeignKey("papers.id", ondelete="SET NULL"),
         nullable=True,
     )
@@ -92,7 +93,7 @@ class Material(Base):
 
     # --- SC-specific 7 fields ----------------------------------------------
     tc_under_pressure: Mapped[Optional[dict[str, Any]]] = mapped_column(
-        JSONB, nullable=True
+        JSONType, nullable=True
     )
     isotope_exponent_alpha: Mapped[Optional[float]] = mapped_column(
         Float, nullable=True
@@ -172,7 +173,7 @@ class Material(Base):
     # --- Metadata -----------------------------------------------------------
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     meta: Mapped[Optional[dict[str, Any]]] = mapped_column(
-        JSONB, nullable=True, server_default=func.cast("{}", JSONB)
+        JSONType, nullable=True, server_default=text("'{}'")
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -200,12 +201,12 @@ class Material(Base):
         Index(
             "materials_tc_value_idx",
             "tc_value",
-            postgresql_where=("tc_value IS NOT NULL"),
+            sqlite_where=text("tc_value IS NOT NULL"),
         ),
         Index(
             "materials_family_idx",
             "superconductor_family",
-            postgresql_where=("superconductor_family IS NOT NULL"),
+            sqlite_where=text("superconductor_family IS NOT NULL"),
         ),
         Index("materials_doi_idx", "doi"),
     )

@@ -6,11 +6,11 @@ import uuid
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import ARRAY, Date, DateTime, Index, String, func
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy import Date, DateTime, Index, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from superconductor_db.db.base import Base
+from superconductor_db.db.types import GUID, JSONType
 
 
 class Paper(Base):
@@ -19,13 +19,13 @@ class Paper(Base):
     __tablename__ = "papers"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        GUID(),
         primary_key=True,
-        server_default=func.gen_random_uuid(),
+        default=lambda: uuid.uuid4(),
     )
     doi: Mapped[Optional[str]] = mapped_column(String, unique=True, nullable=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
-    authors: Mapped[Optional[list[str]]] = mapped_column(ARRAY(String), nullable=True)
+    authors: Mapped[Optional[list[str]]] = mapped_column(JSONType, nullable=True)
     abstract: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     pdf_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     markdown_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)

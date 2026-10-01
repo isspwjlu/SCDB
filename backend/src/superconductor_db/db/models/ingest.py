@@ -21,11 +21,12 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from superconductor_db.db.base import Base
+from superconductor_db.db.types import GUID
 
 
 class IngestRun(Base):
@@ -34,12 +35,12 @@ class IngestRun(Base):
     __tablename__ = "ingest_runs"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        GUID(),
         primary_key=True,
-        server_default=func.gen_random_uuid(),
+        default=lambda: uuid.uuid4(),
     )
     triggered_by: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PG_UUID(as_uuid=True),
+        GUID(),
         ForeignKey("users.id"),
         nullable=True,
     )
@@ -83,10 +84,12 @@ class IngestJob(Base):
     __tablename__ = "ingest_jobs"
 
     id: Mapped[int] = mapped_column(
-        BigInteger, primary_key=True, autoincrement=True
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
     )
     run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PG_UUID(as_uuid=True),
+        GUID(),
         ForeignKey("ingest_runs.id", ondelete="SET NULL"),
         nullable=True,
     )
@@ -113,7 +116,7 @@ class IngestJob(Base):
             "ingest_jobs_pending_idx",
             "status",
             "created_at",
-            postgresql_where=("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
         ),
     )
 

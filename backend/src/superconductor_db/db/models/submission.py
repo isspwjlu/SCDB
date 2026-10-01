@@ -14,7 +14,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from superconductor_db.db.types import GUID, JSONType
 from sqlalchemy.orm import Mapped, mapped_column
 
 from superconductor_db.db.base import Base
@@ -26,24 +26,24 @@ class Submission(Base):
     __tablename__ = "submissions"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        GUID(),
         primary_key=True,
-        server_default=func.gen_random_uuid(),
+        default=lambda: uuid.uuid4(),
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        GUID(),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
     pdf_path: Mapped[str] = mapped_column(Text, nullable=False)
     extracted_json: Mapped[Optional[dict[str, Any]]] = mapped_column(
-        JSONB, nullable=True
+        JSONType, nullable=True
     )
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="pending"
     )
     reviewer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PG_UUID(as_uuid=True),
+        GUID(),
         ForeignKey("users.id"),
         nullable=True,
     )
@@ -64,13 +64,13 @@ class Submission(Base):
             "submissions_status_idx",
             "status",
             "created_at",
-            postgresql_ops={"created_at": "DESC"},
+            
         ),
         Index(
             "submissions_user_idx",
             "user_id",
             "created_at",
-            postgresql_ops={"created_at": "DESC"},
+            
         ),
     )
 
