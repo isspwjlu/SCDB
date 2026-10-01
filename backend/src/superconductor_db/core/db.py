@@ -67,8 +67,16 @@ def get_db() -> Generator[Session, None, None]:
     """
     from superconductor_db.core.config import get_settings
 
-    dsn = get_settings().postgres_dsn or _dsn_from_settings(get_settings())
-    engine = get_engine(dsn)
+    settings = get_settings()
+    dsn = (
+        settings.database_url
+        or settings.postgres_dsn
+        or _dsn_from_settings(settings)
+    )
+    engine = get_engine(
+        dsn,
+        connect_args={"check_same_thread": False} if dsn.startswith("sqlite") else {},
+    )
     SessionLocal = get_session_factory(engine)
     session = SessionLocal()
     try:

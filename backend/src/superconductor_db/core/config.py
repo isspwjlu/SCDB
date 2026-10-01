@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     postgres_db: str = Field(default="superconductor")
     postgres_dsn: str | None = Field(default=None)
 
+    # Unified database URL (DATABASE_URL). If set (e.g. sqlite:///./_dev.db
+    # for local dev), overrides the postgres_* fields. Production leaves
+    # this empty and uses the Postgres connection.
+    database_url: str = Field(default="")
+
     # MinIO
     minio_endpoint: str = Field(default="localhost:9000")
     minio_access_key: str = Field(default="scdb")
