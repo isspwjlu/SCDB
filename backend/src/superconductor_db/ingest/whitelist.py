@@ -196,7 +196,32 @@ _COMPOUND_PATTERNS: tuple[str, ...] = (
     r"CuS2",
 
     # Modern unconventional SC families (nickelates, magic-angle graphene, BiS2)
-    r"Nd1-xSrxNiO2",  # infinite-layer nickelate
+    # Nickelates: Ruddlesden-Popper series (n=1,2,3,4), infinite-layer (n=∞),
+    # reduced / oxygen-deficient variants, RE substitutions (La, Pr, Nd, Sm).
+    r"Nd1-xSrxNiO2",   # infinite-layer nickelate
+    r"NdNiO2",
+    r"Nd0\.8Sr0\.2NiO2",
+    r"PrNiO2",
+    r"Pr1-xSrxNiO2",
+    r"La2NiO4",         # RP n=1
+    r"La3Ni2O7",        # RP n=2 (bilayer nickelate)
+    r"La3Ni2O7-\d",      # reduced La3Ni2O7 (oxygen-deficient)
+    r"La2PrNi2O7",      # La/Pr-substituted bilayer (under pressure, ~80K)
+    r"La2-xPrxNiO4",
+    r"La4Ni3O10",       # RP n=3 (trilayer nickelate)
+    r"La4Ni3O10-\d",
+    r"Nd2NiO4",
+    r"Nd3Ni2O7",
+    r"Nd4Ni3O10",
+    r"Pr4Ni3O10",
+    r"SrNiO2",          # infinite-layer strontium nickelate
+    r"Sr0\.8La0\.2NiO2",
+    r"Nd0\.8Sr0\.2Ni1-xCuxO2",
+    r"NdNiO3",          # rare-earth nickelate perovskite
+    r"PrNiO3",
+    r"Nd5NiO10",        # reduced rare-earth nickelate
+    r"Nd6Ni5O12",
+    r"Ruddlesden-Popper.*nickelate",
     r"NdNiO2",
     r"PrNiO2",
     r"LaNiO2",

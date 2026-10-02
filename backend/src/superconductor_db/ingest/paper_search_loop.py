@@ -52,6 +52,12 @@ SC_SEARCH_QUERIES: tuple[str, ...] = (
     'all:"superconductor" AND (all:cuprate OR all:"iron pnictide" OR all:"MgB2")',
     'all:"superconducting" AND (all:Hg OR all:YBCO OR all:NdNiO OR all:hydride)',
     'cat:cond-mat.supr-con AND (all:La OR all:SmFeAsO OR all:Bi2212 OR all:Hg1223)',
+    # nickelate family — RP bilayer/trilayer / infinite-layer / Pr-substituted
+    'all:(nickelate OR NiO2 OR "La2NiO4" OR "La3Ni2O7" OR "La4Ni3O10" OR SrNiO2 OR nickelate)',
+    # more families
+    'all:superconduct* AND (all:Ruddlesden-Popper OR all:pyrochlore OR all:spin-triplet)',
+    # strontium ruthenate + pnictide-specific
+    'cat:cond-mat.supr-con AND (all:heavy.fermion OR all:1222 OR all:Kondo)',
 )
 
 
