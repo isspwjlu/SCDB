@@ -12,13 +12,24 @@ htmlcov/
 .coverage
 *.db
 *.sqlite
+# The database's sidecars and the snapshots the sync script leaves behind
+*.db-*
+*.db.*
 .DS_Store
 .vscode/
 .idea/
 seeds/supercon.csv
 data/cache/
-data/uploads/backend/src/*.egg-info/
+data/uploads/
+backend/data/cache/
+backend/data/uploads/
+backend/data/*.json
+backend/data/*.bak_*
+backend/src/*.egg-info/
 *.egg-info/
 
 # superpowers plan workspace (ephemeral)
 .superpowers/
+
+# the vite log lives here
+frontend/data/cache/
