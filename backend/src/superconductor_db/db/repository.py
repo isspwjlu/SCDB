@@ -42,6 +42,11 @@ from superconductor_db.schemas.material import SuperconductingRecord
 
 log = logging.getLogger(__name__)
 
+# The family that stands for "no family at all": the rows the extraction
+# could not sort into one. It is a value in its own right, so it can be
+# asked for like any other family.
+UNCLASSIFIED_FAMILY = "__unclassified__"
+
 
 # Sortable columns (whitelist to avoid SQL injection via ``?sort=...``).
 _SORTABLE: dict[str, Any] = {
@@ -109,8 +114,16 @@ class MaterialsRepository:
                 | Material.superconductor_family.ilike(pattern)
             )
         if family := filters.get("family"):
-            stmt = stmt.where(Material.superconductor_family == family)
-            count_stmt = count_stmt.where(Material.superconductor_family == family)
+            if family == UNCLASSIFIED_FAMILY:
+                stmt = stmt.where(Material.superconductor_family.is_(None))
+                count_stmt = count_stmt.where(
+                    Material.superconductor_family.is_(None)
+                )
+            else:
+                stmt = stmt.where(Material.superconductor_family == family)
+                count_stmt = count_stmt.where(
+                    Material.superconductor_family == family
+                )
         if tc_min := filters.get("tc_min"):
             stmt = stmt.where(Material.tc_value >= float(tc_min))
             count_stmt = count_stmt.where(Material.tc_value >= float(tc_min))
@@ -249,6 +262,61 @@ class MaterialsRepository:
             .order_by(func.count(Material.id).desc())
         ).all()
         return [{"family": fam, "count": int(cnt)} for fam, cnt in rows]
+
+    def family_counts(self) -> list[dict[str, Any]]:
+        """Every family with its row count, the unsorted ones included.
+
+        The list a filter menu is built from: the families are the
+        ones the data actually holds, and the rows that carry no
+        family at all are a family of their own.
+        """
+        rows = self.session.execute(
+            select(Material.superconductor_family, func.count(Material.id))
+            .group_by(Material.superconductor_family)
+            .order_by(func.count(Material.id).desc())
+        ).all()
+        return [
+            {
+                "family": fam if fam is not None else UNCLASSIFIED_FAMILY,
+                "count": int(cnt),
+            }
+            for fam, cnt in rows
+        ]
+
+    def family_best(self) -> list[dict[str, Any]]:
+        """The highest-Tc material in each family.
+
+        The families come back from the highest Tc down, so a bar
+        chart of them reads from the top.
+        """
+        ranked = (
+            select(
+                Material.superconductor_family.label("family"),
+                Material.chemical_composition.label("composition"),
+                Material.tc_value.label("tc"),
+                func.row_number()
+                .over(
+                    partition_by=Material.superconductor_family,
+                    order_by=(
+                        Material.tc_value.desc(),
+                        Material.chemical_composition.asc(),
+                    ),
+                )
+                .label("rank"),
+            )
+            .where(Material.superconductor_family.is_not(None))
+            .where(Material.tc_value.is_not(None))
+            .subquery()
+        )
+        rows = self.session.execute(
+            select(ranked.c.family, ranked.c.composition, ranked.c.tc)
+            .where(ranked.c.rank == 1)
+            .order_by(ranked.c.tc.desc())
+        ).all()
+        return [
+            {"family": family, "composition": composition, "tc": float(tc)}
+            for family, composition, tc in rows
+        ]
 
     def tc_vs_pressure(self) -> list[dict[str, Any]]:
         """For each material with ``tc_under_pressure`` JSONB, return
