@@ -24,6 +24,12 @@ class User(Base):
     )
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
+    # The person's name. It is asked for at registration; it may be
+    # empty for the accounts that predate the question.
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Where the person works. It is asked for at registration; it may be
+    # empty for the accounts that predate the question.
+    institution: Mapped[str | None] = mapped_column(String, nullable=True)
     role: Mapped[str] = mapped_column(
         String,
         nullable=False,
