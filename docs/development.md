@@ -26,6 +26,33 @@ For convenience, the backend source is bind-mounted in dev mode; FastAPI auto-re
 file save. The frontend Vite server HMRs on save. Save any file, see the change in
 your browser within a second.
 
+### docling virtualenv
+
+PDF parsing runs on [docling](https://github.com/docling-project/docling), which
+lives in **its own virtualenv** at `backend/.venv-docling` -- not in the application
+venv. The application venv's base interpreter is an Anaconda Python, and the
+torch wheels docling needs refuse to load there (`Error loading c10.dll`).
+
+```bash
+uv venv --python 3.12 backend/.venv-docling
+uv pip install --python backend/.venv-docling/Scripts/python.exe "docling-slim[standard]>=2.142,<3"
+```
+
+`backend/tools/docling_worker.py` is the bridge: it reads `{"pdf": ..., "out": ...}`
+requests as JSON lines on stdin and writes one result line per request, so a batch
+of papers pays the model-loading cost once. `ingest/docling_parser.py` drives it,
+caches the markdown by the PDF's SHA-256, and strips the bibliography (reference
+titles are a rich source of numbers the extractor must not borrow).
+
+Convert everything already in the PDF cache:
+
+```bash
+cd backend && .venv/Scripts/python.exe -m superconductor_db.ingest.docling_parser
+```
+
+The docling models are fetched from Hugging Face; `HF_ENDPOINT` defaults to a
+mirror, override it if the network allows the real host.
+
 ## TDD workflow
 
 The project follows red → green → refactor for every behavior change.

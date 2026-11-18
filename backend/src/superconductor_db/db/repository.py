@@ -36,6 +36,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from superconductor_db.core.units import energy_gap_to_mev, magnetic_field_to_tesla
 from superconductor_db.db.models.material import Material
 from superconductor_db.schemas.material import SuperconductingRecord
 
@@ -175,7 +176,11 @@ class MaterialsRepository:
             .group_by(Material.superconductor_family)
             .order_by(func.count(Material.id).desc())
         ).all()
-        family_counts = {fam: int(cnt) for fam, cnt in family_rows}
+        # Emitted as a list of {family, count} / {mechanism, count} objects to
+        # match the shape of /stats/charts/family-pie and the frontend's
+        # StatsOverview type. Returning a dict here made ``family_counts.length``
+        # undefined, so the dashboard's "families" tile showed 0.
+        family_counts = [{"family": fam, "count": int(cnt)} for fam, cnt in family_rows]
 
         mech_rows = self.session.execute(
             select(Material.mechanism, func.count(Material.id))
@@ -183,7 +188,9 @@ class MaterialsRepository:
             .group_by(Material.mechanism)
             .order_by(func.count(Material.id).desc())
         ).all()
-        mechanism_counts = {mech: int(cnt) for mech, cnt in mech_rows}
+        mechanism_counts = [
+            {"mechanism": mech, "count": int(cnt)} for mech, cnt in mech_rows
+        ]
 
         return {
             "total": total,
@@ -282,6 +289,42 @@ class MaterialsRepository:
         si = record.structure_information
         pm = record.preparation_method
 
+        # Units are normalised on the way in. A paper states its gap in meV,
+        # in kB*Tc, in cm^-1 or in THz, and stores them all side by side;
+        # a chart then has six unit systems on one axis, and one row in
+        # s^-1 (a frequency, not an energy) stretched the log axis over ten
+        # decades. The gap goes to meV and the fields to tesla. A value
+        # whose unit cannot be read is kept as it was -- dropping it would
+        # lose the paper's own words -- but it is recorded in the meta.
+        gap_value = _qty_value(sp.Energy_Gap)
+        gap_unit = _qty_unit(sp.Energy_Gap)
+        gap_mev = energy_gap_to_mev(gap_value, gap_unit, _qty_value(sp.Tc))
+        hc1_value = _qty_value(sp.Hc1)
+        hc1_tesla = magnetic_field_to_tesla(hc1_value, _qty_unit(sp.Hc1))
+        hc2_value = _qty_value(sp.Hc2)
+        hc2_tesla = magnetic_field_to_tesla(hc2_value, _qty_unit(sp.Hc2))
+
+        meta = dict(record.meta or {})
+        conversions: dict[str, str] = {}
+        if gap_value is not None:
+            if gap_mev is not None:
+                conversions["energy_gap"] = f"{gap_unit or '?'} -> meV"
+                gap_value, gap_unit = gap_mev, "meV"
+            else:
+                meta["energy_gap_as_read"] = {"value": gap_value, "unit": gap_unit}
+        for name, value, unit, tesla in (
+            ("hc1", hc1_value, _qty_unit(sp.Hc1), hc1_tesla),
+            ("hc2", hc2_value, _qty_unit(sp.Hc2), hc2_tesla),
+        ):
+            if value is None:
+                continue
+            if tesla is not None:
+                conversions[name] = f"{unit or '?'} -> T"
+            else:
+                meta[f"{name}_as_read"] = {"value": value, "unit": unit}
+        if conversions:
+            meta["units_normalised"] = conversions
+
         row: dict[str, Any] = {
             "chemical_composition": record.material_chemical_composition,
             "doi": record.doi,
@@ -291,12 +334,12 @@ class MaterialsRepository:
             "tc_unit": _qty_unit(sp.Tc),
             "t_cdw_value": _qty_value(sp.T_CDW),
             "t_cdw_unit": _qty_unit(sp.T_CDW),
-            "hc1_value": _qty_value(sp.Hc1),
-            "hc1_unit": _qty_unit(sp.Hc1),
-            "hc2_value": _qty_value(sp.Hc2),
-            "hc2_unit": _qty_unit(sp.Hc2),
-            "energy_gap_value": _qty_value(sp.Energy_Gap),
-            "energy_gap_unit": _qty_unit(sp.Energy_Gap),
+            "hc1_value": hc1_tesla if hc1_tesla is not None else hc1_value,
+            "hc1_unit": "T" if hc1_tesla is not None else _qty_unit(sp.Hc1),
+            "hc2_value": hc2_tesla if hc2_tesla is not None else hc2_value,
+            "hc2_unit": "T" if hc2_tesla is not None else _qty_unit(sp.Hc2),
+            "energy_gap_value": gap_value,
+            "energy_gap_unit": gap_unit,
             "coherence_length_value": _qty_value(sp.Coherence_Length),
             "coherence_length_unit": _qty_unit(sp.Coherence_Length),
             "penetration_depth_value": _qty_value(sp.Penetration_Depth),
@@ -334,7 +377,7 @@ class MaterialsRepository:
             "lattice_c_unit": si.c.unit if si.c else None,
             "space_group": si.space_group,
             "notes": record.notes,
-            "meta": record.meta or {},
+            "meta": meta,
         }
         # Optional preparation fields; only include when present.
         for src, dst in (

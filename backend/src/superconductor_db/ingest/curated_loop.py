@@ -36,14 +36,28 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import superconductor_db.db.models  # noqa: F401 — register tables
 from superconductor_db.db import Base
 from superconductor_db.db.models.ingest import IngestRun
+from superconductor_db.ingest.db_setup import build_ingest_engine
 from superconductor_db.ingest.llm_client import LLMClient
+from superconductor_db.ingest.netresilience import wait_for_network
 from superconductor_db.ingest.paper_ingest import ingest_one
+
+
+def _default_database_url() -> str:
+    """Fall back to the configured DATABASE_URL.
+
+    A hard-coded relative ``sqlite:///./_dev.db`` silently creates a new
+    empty database whenever the process starts from a different working
+    directory, which looks like total data loss.
+    """
+    from superconductor_db.core.config import get_settings
+
+    return get_settings().database_url or "sqlite:///./_dev.db"
+
 
 log = logging.getLogger("curated_loop")
 logging.basicConfig(
@@ -130,71 +144,123 @@ CURATED_ARXIV_IDS: tuple[str, ...] = (
 
 
 async def _main(args: argparse.Namespace) -> None:
-    engine = create_engine(
-        args.database_url,
-        connect_args={"check_same_thread": False} if args.database_url.startswith("sqlite") else {},
-    )
+    engine = build_ingest_engine(args.database_url)
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
-    ids = list(CURATED_ARXIV_IDS)
-    if args.shuffle:
-        random.shuffle(ids)
-    log.info("curated_loop starting: %d IDs, delay=%ds, shuffle=%s", len(ids), int(args.delay), args.shuffle)
+    log.info(
+        "curated_loop starting: %d IDs, delay=%ds, shuffle=%s",
+        len(CURATED_ARXIV_IDS), int(args.delay), args.shuffle,
+    )
     log.info("database: %s", args.database_url)
 
-    # Single ingest_run spans the whole loop (one row, updated as we go).
     run_id = uuid.uuid4()
     with SessionLocal() as s:
-        s.add(IngestRun(id=run_id, status="running"))
+        s.add(IngestRun(id=run_id, status="running", started_at=datetime.now(timezone.utc)))
         s.commit()
 
-    round_idx = 0
     total_extracted = 0
     total_stored = 0
-    total_hallucinations = 0
+    total_downloaded = 0
     total_failures = 0
     t_start = time.time()
 
-    while True:
-        round_idx += 1
-        ids = list(CURATED_ARXIV_IDS)
-        if args.shuffle:
-            random.shuffle(ids)
-        log.info("=== round %d (%d IDs) ===", round_idx, len(ids))
-        for ident in ids:
+    # The curated list is finite, so sweeping it once exhausts it. Previously
+    # this loop re-shuffled and re-ingested the same IDs forever, spending ~8
+    # LLM calls per paper per round on data already in the database (54 unique
+    # IDs were each re-ingested up to 67 times). Once every ID has been swept,
+    # the loop exits instead of spinning.
+    pending: list[str] = list(CURATED_ARXIV_IDS)
+    if args.shuffle:
+        random.shuffle(pending)
+
+    # Papers are ingested concurrently. Each paper costs ~8 LLM calls and the
+    # extractor already fans those out in parallel, so processing papers one at
+    # a time left the loop latency-bound: 35-95 s per paper, almost all of it
+    # waiting on the model. A semaphore bounds the total in-flight requests so
+    # this cannot walk into a rate limit.
+    semaphore = asyncio.Semaphore(args.concurrency)
+    processed = 0
+
+    async def ingest_with_limit(ident: str) -> tuple[int, int, bool]:
+        async with semaphore:
+            # skip_known_papers: the curated list is swept many times over the
+            # life of the supervisor. Once a paper has records in the DB,
+            # re-running the ~8-call extraction only to hit per-row dedup is
+            # pure API spend. Freshly added curated IDs (no paper row yet) and
+            # papers whose earlier sweep extracted nothing still run fully.
+            return await ingest_one(SessionLocal, ident, skip_known_papers=True)
+
+    while pending:
+        # Wait out an outage rather than marking every remaining paper failed.
+        if not await wait_for_network(max_wait_s=0.0):
+            log.warning("pausing: network still offline, %d papers left", len(pending))
+        batch = pending[: args.concurrency]
+        pending = pending[args.concurrency :]
+
+        async def run_one(ident: str) -> tuple[str, int, int, bool]:
+            downloaded = False
             try:
-                extracted, stored = await ingest_one(SessionLocal, ident)
-                total_extracted += extracted
-                total_stored += stored
+                extracted, stored, downloaded = await ingest_with_limit(ident)
+                return ident, extracted, stored, downloaded
             except Exception as exc:  # noqa: BLE001
-                total_failures += 1
                 log.warning("ingest %s failed: %s", ident, exc)
-            # Persist run counters incrementally.
-            with SessionLocal() as s:
-                run = s.get(IngestRun, run_id)
-                if run is not None:
-                    run.papers_searched = (run.papers_searched or 0) + 1
-                    run.records_extracted = (run.records_extracted or 0) + total_extracted
-                    run.records_stored = (run.records_stored or 0) + total_stored
-                    run.errors = (run.errors or 0) + total_failures
-                    s.commit()
-        elapsed = time.time() - t_start
-        rate = total_stored / (elapsed / 60.0) if elapsed > 0 else 0
+                return ident, 0, 0, False
+
+        results = await asyncio.gather(*(run_one(i) for i in batch))
+
+        for _ident, extracted, stored, downloaded in results:
+            total_extracted += extracted
+            total_stored += stored
+            if downloaded:
+                total_downloaded += 1
+            processed += 1
+
+        with SessionLocal() as s:
+            run = s.get(IngestRun, run_id)
+            if run is not None:
+                run.papers_searched = processed
+                run.papers_downloaded = total_downloaded
+                run.records_extracted = total_extracted
+                run.records_stored = total_stored
+                run.errors = total_failures
+                s.commit()
+
         log.info(
-            "round %d done: cum extracted=%d stored=%d failures=%d (%.1f/min)",
-            round_idx, total_extracted, total_stored, total_failures, rate,
+            "batch of %d done — %d/%d processed (cum extracted=%d stored=%d "
+            "downloaded=%d failures=%d)",
+            len(batch), processed, len(CURATED_ARXIV_IDS),
+            total_extracted, total_stored, total_downloaded, total_failures,
         )
-        log.info("sleeping %ds before next round", int(args.delay))
-        time.sleep(args.delay)
+        if pending:
+            time.sleep(args.delay)
+
+    elapsed = time.time() - t_start
+    rate = total_stored / (elapsed / 60.0) if elapsed > 0 else 0
+    log.info(
+        "curated sweep complete: %d papers, extracted=%d stored=%d "
+        "downloaded=%d failures=%d (%.1f rows/min)",
+        len(CURATED_ARXIV_IDS), total_extracted, total_stored,
+        total_downloaded, total_failures, rate,
+    )
+    # Always close the run out: a process kill must not leave status='running'.
+    with SessionLocal() as s:
+        run = s.get(IngestRun, run_id)
+        if run is not None:
+            run.status = "completed" if total_failures == 0 else "failed"
+            run.finished_at = datetime.now(timezone.utc)
+            s.commit()
+    log.info("curated_loop exiting (curated list exhausted)")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("--database-url", default="sqlite:///./_dev.db")
+    parser.add_argument("--database-url", default=_default_database_url())
     parser.add_argument("--delay", type=float, default=60.0)
     parser.add_argument("--shuffle", action="store_true", default=True,
                         help="Shuffle paper order each round")
+    parser.add_argument("--concurrency", type=int, default=4,
+                        help="Papers ingested in parallel (default 4)")
     args = parser.parse_args(argv)
     try:
         asyncio.run(_main(args))

@@ -33,21 +33,46 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 import superconductor_db.db.models  # noqa: F401 — register tables
 from superconductor_db.db import Base
 from superconductor_db.db.models.ingest import IngestRun
 from superconductor_db.db.models.material import Material
-from superconductor_db.ingest.extractor import SuperconductingExtractor
+from superconductor_db.db.models.paper import Paper
+from superconductor_db.db.repository import MaterialsRepository
+from superconductor_db.ingest.db_setup import build_ingest_engine
+from superconductor_db.ingest.docling_parser import markdown_cache_path
+from superconductor_db.ingest.extractor import (
+    SuperconductingExtractor,
+    classify_tc_evidence,
+    evidence_for,
+)
 from superconductor_db.ingest.llm_client import LLMClient
+from superconductor_db.ingest.markdown_title import title_from_markdown
+from superconductor_db.ingest.netresilience import with_network_retry
+from superconductor_db.ingest.direct_fetch import is_downloadable
+from superconductor_db.ingest.provenance import upsert_paper
 from superconductor_db.ingest.scansci_wrapper import (
     ScanSciError,
     download_pdf,
     parse_pdf_to_markdown,
 )
 from superconductor_db.ingest.whitelist import is_known_superconductor
+
+
+def _default_database_url() -> str:
+    """Fall back to the configured DATABASE_URL.
+
+    A hard-coded relative ``sqlite:///./_dev.db`` silently creates a new
+    empty database whenever the process starts from a different working
+    directory, which looks like total data loss.
+    """
+    from superconductor_db.core.config import get_settings
+
+    return get_settings().database_url or "sqlite:///./_dev.db"
+
 
 log = logging.getLogger("paper_ingest")
 logging.basicConfig(
@@ -61,40 +86,143 @@ logging.basicConfig(
 # --------------------------------------------------------------------------- #
 
 
+
+def _apply_evidence(row: dict[str, Any], record: Any, comp: str) -> str:
+    """Attach the Tc evidence sentence and decide whether the row is a measurement.
+
+    Returns a short status for logging, or the empty string when the evidence
+    shows a calculated value and the row must be rejected. The evidence quote
+    is stored in ``notes`` so a reviewer can check the number, and its wording
+    decides measurement vs prediction — the LLM's own ``Experimental`` flag is
+    unreliable.
+
+    A calculated Tc is refused outright rather than stored with a false flag.
+    PRL 119, 107001 contributed LaH10 at 288 K and YH9 at 276 K that way, and
+    because the dashboard sorts by Tc they took the top two rows, presenting
+    theory as the highest recorded transition in the database.
+    """
+    quotes = evidence_for(comp)
+    tc_quote = quotes.get("Tc", "")
+    if not tc_quote:
+        return "no evidence"
+    row["notes"] = f"Tc evidence: {tc_quote}"
+    verdict = classify_tc_evidence(tc_quote)
+    if verdict == "theoretical":
+        return ""
+    if verdict == "experimental":
+        row["experimental"] = True
+    return verdict or "unclassified"
+
+
 async def ingest_one(
     session_factory: sessionmaker[Session],
     identifier: str,
     *,
-    markdown_char_limit: int = 28000,
-) -> tuple[int, int]:
+    markdown_char_limit: int = 60000,
+    skip_known_papers: bool = False,
+    client: LLMClient | None = None,
+    serial_prompts: bool = False,
+) -> tuple[int, int, bool]:
     """Run the full ingest pipeline for one identifier.
 
-    Returns ``(records_extracted, records_stored)``.
+    Returns ``(records_extracted, records_stored, pdf_downloaded)`` — the third
+    element is True when a PDF was fetched and parsed, which the loops use to
+    keep ``IngestRun.papers_downloaded`` accurate.
+
+    ``client`` can be passed in so that a caller running many papers can
+    read one accumulated token count instead of one per paper.
     """
     log.info("--- ingest %s ---", identifier)
-    client = LLMClient()
+    client = client or LLMClient()
     extractor = SuperconductingExtractor(client)
 
-    # 1. PDF via scansci-pdf
+    # 0. Skip DOIs no channel here can retrieve. A doomed attempt costs a
+    # 180 s timeout and a download slot; 7 of 72 failures in 24 h were SSRN
+    # (10.2139), an author-posting platform whose PDFs sit behind an upload wall.
+    if not is_downloadable(identifier):
+        log.info("skip %s — no retrievable full text for this prefix", identifier)
+        return 0, 0, False
+
+    # 0.5 Skip identifiers that were already processed to the extraction stage
+    # at least once. ``upsert_paper`` only creates the Paper row *after* a
+    # successful download + extraction, so an existing row is a durable
+    # "already swept" marker that survives restarts. The curated list is
+    # static and fully swept; without this guard a supervisor restart
+    # re-downloaded and re-extracted every paper (~8 LLM calls each) only to
+    # hit the per-row dedup at the end. Deliberately row-count-agnostic:
+    # papers whose extraction yielded nothing stay skipped too — re-running
+    # the loop is not the backfill path, ``paper_ingest`` CLI (no skip) is.
+    if skip_known_papers:
+        with session_factory() as s:
+            known = s.execute(
+                select(Paper.id).where(Paper.doi == identifier).limit(1)
+            ).scalar_one_or_none()
+            if known is not None:
+                log.info("skip %s — already ingested (paper row exists)", identifier)
+                return 0, 0, False
+
+    # 1. PDF. A transport failure means the machine is offline, not that the
+    # paper is unavailable, so it is waited out rather than counted as a
+    # failed download; only a genuine ScanSciError means "no such PDF".
     try:
-        pdf_path = await download_pdf(identifier, timeout=180)
+        pdf_path = await with_network_retry(
+            lambda: download_pdf(identifier, timeout=180),
+            description=f"download {identifier}",
+        )
     except ScanSciError as exc:
         log.error("download failed: %s", exc)
-        return 0, 0
+        return 0, 0, False
+    if pdf_path is None:
+        log.error("download abandoned while offline: %s", identifier)
+        return 0, 0, False
 
-    # 2. Markdown via PyMuPDF
+    # 2. Markdown via docling (tables come out as markdown tables).
+    # The limit is generous because a docling markdown carries the paper's
+    # tables -- the richest source of Tc values -- and cutting them off
+    # would lose exactly what the extractor is looking for.
     md = await parse_pdf_to_markdown(pdf_path)
     log.info("PDF %d bytes, markdown %d chars", pdf_path.stat().st_size, len(md))
     md = md[:markdown_char_limit]
 
-    # 3. LLM extract (MiniMax)
-    records = await extractor.extract_all(md, doi=identifier)
+    # 3. LLM extract (MiniMax). Same reasoning: an outage here must not
+    # silently drop a paper that has already been downloaded and parsed.
+    records = await with_network_retry(
+        lambda: extractor.extract_all(
+            md, doi=identifier, serial_prompts=serial_prompts
+        ),
+        description=f"extract {identifier}",
+    )
+    if records is None:
+        log.error("extraction abandoned while offline: %s", identifier)
+        return 0, 0, False
     log.info("LLM extracted %d records", len(records))
+    usage = client.usage
+    log.info(
+        "LLM usage: %d calls, prompt %d (cached %d), completion %d "
+        "(reasoning %d)",
+        usage["calls"],
+        usage["prompt_tokens"],
+        usage["cached_tokens"],
+        usage["completion_tokens"],
+        usage["reasoning_tokens"],
+    )
 
     # 4. Upsert into materials table.
     stored = 0
     skipped_hallucination = 0
     with session_factory() as s:
+        # Create the source Paper row so every Material can be traced back to
+        # the paper it was extracted from (materials.paper_id). The title
+        # comes from the parsed markdown: docling writes it as the
+        # document's first heading, and without it every paper was stored
+        # under the placeholder "(title unavailable) <doi>".
+        paper_id = upsert_paper(
+            s,
+            identifier,
+            title=title_from_markdown(md),
+            pdf_path=str(pdf_path),
+            markdown_path=str(markdown_cache_path(pdf_path)),
+        )
         for r in records:
             if not r.has_meaningful_data():
                 log.info("  skip %s — no SC quantity", r.material_chemical_composition)
@@ -112,7 +240,10 @@ async def ingest_one(
             sp = r.superconducting_property
             tc = sp.Tc.value if sp.Tc else None
             if tc is None or not isinstance(tc, (int, float)):
-                log.debug("  skip %s — no numeric Tc (skipping)", comp)
+                # INFO, not DEBUG: an all-silent round (extracted=11 stored=0)
+                # is undiagnosable from the log when the dominant skip reason
+                # is invisible.
+                log.info("  skip %s — no numeric Tc (skipping)", comp)
                 continue
             doi = (r.doi or "").strip()
             # Dedup by DOI only. Multiple papers reporting the same
@@ -121,7 +252,7 @@ async def ingest_one(
             # be preserved. Re-extracting the SAME paper on the same
             # compound collapses via the DOI match.
             if not doi:
-                log.debug(
+                log.info(
                     "  skip %s — paper has no DOI (skipping to avoid dedup gap)",
                     comp,
                 )
@@ -139,95 +270,26 @@ async def ingest_one(
                 # earlier — we keep the best). This means re-running an
                 # extraction over the same paper *fills in* missing fields
                 # rather than overwriting good data.
+                #
+                # Uses the same ``_record_to_row`` mapper as the insert path so
+                # every extracted field participates. The previous version
+                # probed attributes like ``r.hc2_value`` that do not exist on
+                # ``SuperconductingRecord``, so ``hasattr`` was always False and
+                # the merge silently filled nothing.
                 existing = existing_row[0]
                 changed = False
-                new_pair = {
-                    "tc_unit": (sp.Tc.unit if sp.Tc else None) or None,
-                    "superconductor_family": (
-                        sp.Superconductor_Family
-                        if sp.Superconductor_Family and sp.Superconductor_Family != "NA"
-                        else None
-                    ),
-                    "mechanism": (
-                        sp.Mechanism if sp.Mechanism and sp.Mechanism != "NA" else None
-                    ),
-                    "pairing_symmetry": (
-                        sp.Pairing_Symmetry
-                        if sp.Pairing_Symmetry and sp.Pairing_Symmetry != "NA"
-                        else None
-                    ),
-                    "sc_type": sp.Type if sp.Type and sp.Type != "NA" else None,
-                    "hc2_value": (r.hc2_value or None) if hasattr(r, "hc2_value") else None,
-                    "hc2_unit": (r.hc2_unit or None) if hasattr(r, "hc2_unit") else None,
-                    "critical_current_density_value": (
-                        (r.critical_current_density_value or None)
-                        if hasattr(r, "critical_current_density_value")
-                        else None
-                    ),
-                    "critical_current_density_unit": (
-                        (r.critical_current_density_unit or None)
-                        if hasattr(r, "critical_current_density_unit")
-                        else None
-                    ),
-                    "crystal_structure": r.crystal_structure if hasattr(r, "crystal_structure") else None,
-                    "space_group": r.space_group if hasattr(r, "space_group") else None,
-                    "lattice_a_value": (
-                        r.lattice_a_value if hasattr(r, "lattice_a_value") else None
-                    ),
-                    "lattice_a_unit": (
-                        r.lattice_a_unit if hasattr(r, "lattice_a_unit") else None
-                    ),
-                    "lattice_b_value": (
-                        r.lattice_b_value if hasattr(r, "lattice_b_value") else None
-                    ),
-                    "lattice_b_unit": (
-                        r.lattice_b_unit if hasattr(r, "lattice_b_unit") else None
-                    ),
-                    "lattice_c_value": (
-                        r.lattice_c_value if hasattr(r, "lattice_c_value") else None
-                    ),
-                    "lattice_c_unit": (
-                        r.lattice_c_unit if hasattr(r, "lattice_c_unit") else None
-                    ),
-                    "synthesis_method": (
-                        r.synthesis_method if hasattr(r, "synthesis_method") else None
-                    ),
-                    "chemical_precursors": (
-                        r.chemical_precursors if hasattr(r, "chemical_precursors") else None
-                    ),
-                    "synthesis_temperature_value": (
-                        r.synthesis_temperature_value
-                        if hasattr(r, "synthesis_temperature_value")
-                        else None
-                    ),
-                    "synthesis_temperature_unit": (
-                        r.synthesis_temperature_unit
-                        if hasattr(r, "synthesis_temperature_unit")
-                        else None
-                    ),
-                    "synthesis_atmosphere": (
-                        r.synthesis_atmosphere if hasattr(r, "synthesis_atmosphere") else None
-                    ),
-                    "substrate": r.substrate if hasattr(r, "substrate") else None,
-                    "isotope_exponent_alpha": (
-                        r.isotope_exponent_alpha
-                        if hasattr(r, "isotope_exponent_alpha")
-                        else None
-                    ),
-                    "tc_under_pressure": (
-                        r.tc_under_pressure if hasattr(r, "tc_under_pressure") else None
-                    ),
-                    "additional_details": (
-                        r.additional_details if hasattr(r, "additional_details") else None
-                    ),
-                    "updated_at": datetime.now(timezone.utc),
-                }
-                for attr, new_val in new_pair.items():
-                    cur = getattr(existing, attr)
+                for attr, new_val in MaterialsRepository._record_to_row(r).items():
+                    if attr in {"chemical_composition", "doi", "source"}:
+                        continue
+                    cur = getattr(existing, attr, None)
                     if cur is None and new_val is not None:
                         setattr(existing, attr, new_val)
                         changed = True
+                if existing.paper_id is None and paper_id is not None:
+                    existing.paper_id = paper_id
+                    changed = True
                 if changed:
+                    existing.updated_at = datetime.now(timezone.utc)
                     s.commit()
                     log.info(
                         "  merged fields for %s (DOI %s) — no new row",
@@ -239,38 +301,29 @@ async def ingest_one(
                         comp, doi,
                     )
                 continue
-            m = Material(
-                id=uuid.uuid4(),
-                chemical_composition=comp,
-                tc_value=float(tc) if isinstance(tc, (int, float)) else None,
-                tc_unit=sp.Tc.unit,
-                superconductor_family=(
-                    sp.Superconductor_Family
-                    if sp.Superconductor_Family and sp.Superconductor_Family != "NA"
-                    else None
-                ),
-                mechanism=(
-                    sp.Mechanism if sp.Mechanism and sp.Mechanism != "NA" else None
-                ),
-                pairing_symmetry=(
-                    sp.Pairing_Symmetry
-                    if sp.Pairing_Symmetry and sp.Pairing_Symmetry != "NA"
-                    else None
-                ),
-                sc_type=sp.Type if sp.Type and sp.Type != "NA" else None,
-                source="paper_ingest",
-                experimental=True,
-                doi=doi or None,
-            )
+            # ``_record_to_row`` already carries ``source`` (the record's own
+            # provenance, e.g. "llm_extract"), so override it here rather than
+            # passing it twice — a duplicate keyword raises TypeError and the
+            # insert is lost.
+            row = MaterialsRepository._record_to_row(r)
+            row["source"] = "paper_ingest"
+            # Persist the evidence sentence and let its wording decide whether
+            # this is a measurement. A calculated Tc is dropped: it would
+            # otherwise sort to the top of the dashboard as if it were observed.
+            evidence = _apply_evidence(row, r, comp)
+            if not evidence:
+                log.info("  skip %s — evidence shows a calculated Tc", comp)
+                continue
+            m = Material(id=uuid.uuid4(), paper_id=paper_id, **row)
             s.add(m)
             stored += 1
-            log.info("  + %s Tc=%s", comp, tc)
+            log.info("  + %s Tc=%s (%s)", comp, tc, evidence or "no evidence")
         s.commit()
     log.info(
         "  extracted=%d stored=%d skipped_hallucination=%d",
         len(records), stored, skipped_hallucination,
     )
-    return len(records), stored
+    return len(records), stored, True
 
 
 # --------------------------------------------------------------------------- #
@@ -284,15 +337,12 @@ def main(argv: list[str] | None = None) -> int:
         "identifiers", nargs="+",
         help="One or more arXiv IDs (e.g. 10.48550/arXiv.cond-mat/0212371) or DOIs",
     )
-    parser.add_argument("--database-url", default="sqlite:///./_dev.db")
+    parser.add_argument("--database-url", default=_default_database_url())
     parser.add_argument("--run-id", default=None,
                         help="Optional explicit IngestRun UUID; new one is created per call if omitted")
     args = parser.parse_args(argv)
 
-    engine = create_engine(
-        args.database_url,
-        connect_args={"check_same_thread": False} if args.database_url.startswith("sqlite") else {},
-    )
+    engine = build_ingest_engine(args.database_url)
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
@@ -303,11 +353,13 @@ def main(argv: list[str] | None = None) -> int:
 
     total_extracted = 0
     total_stored = 0
+    total_downloaded = 0
     failures = 0
     t0 = time.time()
     for ident in args.identifiers:
+        downloaded = False
         try:
-            extracted, stored = asyncio.run(
+            extracted, stored, downloaded = asyncio.run(
                 ingest_one(SessionLocal, ident)
             )
             total_extracted += extracted
@@ -315,11 +367,16 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001
             log.exception("ingest_one(%s) crashed: %s", ident, exc)
             failures += 1
+        if downloaded:
+            total_downloaded += 1
         # Update run counters incrementally.
         with SessionLocal() as s:
             run = s.get(IngestRun, run_id)
             if run is not None:
                 run.papers_searched = (run.papers_searched or 0) + 1
+                run.papers_downloaded = (run.papers_downloaded or 0) + (
+                    1 if downloaded else 0
+                )
                 run.records_extracted = (run.records_extracted or 0) + total_extracted
                 run.records_stored = (run.records_stored or 0) + total_stored
                 run.errors = (run.errors or 0) + failures

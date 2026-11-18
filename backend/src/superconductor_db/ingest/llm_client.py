@@ -24,6 +24,8 @@ Key behaviour (spec §6.3 + §11):
 from __future__ import annotations
 
 import asyncio
+import time
+import random
 import json
 import logging
 import re
@@ -215,19 +217,59 @@ def _recover_truncated_json(text: str) -> str | None:
 # --------------------------------------------------------------------------- #
 
 
+# A 429 is a quota signal, not a blip. The account allows a sustained rate
+# that the loop's concurrency exceeds, so backoff has to be long enough for
+# the window to refill — and shared, so every concurrent worker waits out the
+# same cooldown instead of each discovering the limit independently.
+_RATE_LIMIT_BACKOFF_S = 12.0
+_RATE_LIMIT_PARK_S = 25.0
+_MAX_BACKOFF_S = 60.0
+
+
+class _EmptyAnswerError(ValueError):
+    """The model returned no answer -- only its reasoning, if any.
+
+    Separate from the other failures because retrying the same call does
+    not help: a reasoning model that spent its whole budget thinking will
+    do the same thing again. The caller raises the budget instead.
+    """
+
+
 class LLMClient:
     """Async OpenAI-compatible chat client with JSON extraction helpers."""
-
     def __init__(
         self,
         settings: Settings | None = None,
         *,
-        timeout: float = 120.0,
-        max_attempts: int = 3,
+        timeout: float | None = None,
+        max_attempts: int = 4,
     ) -> None:
         self.settings = settings or get_settings()
-        self.timeout = timeout
+        self.timeout = timeout if timeout is not None else self.settings.llm_timeout
         self.max_attempts = max_attempts
+        # Shared cooldown timestamp. Every call consults it before issuing a
+        # request, so one rate-limit response slows the whole pipeline rather
+        # than only the call that hit it.
+        self._parked_until: float = 0.0
+        # The dimension prompts of one paper go out together, four to seven
+        # of them, and MiniMax rejects that burst with "Token Plan 速率超限,
+        # 请降低并发量" (HTTP 429, code 2056). The requests queue here instead:
+        # the paper is still extracted as a unit, but the endpoint sees a
+        # request rate it accepts.
+        self._concurrency = asyncio.Semaphore(
+            max(1, self.settings.llm_max_concurrency)
+        )
+        # Token accounting for the calls this client made. The pipeline
+        # logs it per paper: the difference between a reasoning budget that
+        # fits and one that starves the answer is only visible in the
+        # usage numbers.
+        self.usage: dict[str, int] = {
+            "calls": 0,
+            "prompt_tokens": 0,
+            "cached_tokens": 0,
+            "completion_tokens": 0,
+            "reasoning_tokens": 0,
+        }
         # Normalise base_url: strip trailing slashes; ensure ``/chat/completions``
         # is appended at call time (some servers use ``/v1`` prefix already).
         self.base_url = self.settings.llm_base_url.rstrip("/")
@@ -237,12 +279,20 @@ class LLMClient:
         messages: list[dict[str, str]],
         *,
         temperature: float = 0.1,
-        max_tokens: int = 8192,
+        max_tokens: int | None = None,
+        allow_reasoning_fallback: bool = True,
     ) -> str:
         """Call the LLM and return the assistant message text.
 
         Retries up to ``max_attempts`` times on connection errors and HTTP 429
         with exponential backoff (1s, 2s, 4s).
+
+        ``allow_reasoning_fallback`` decides what happens when the model
+        returns no answer but does return its thinking. A local llama.cpp
+        build can put the answer inside the thinking block, so the fallback
+        is on by default; a reasoning model that ran out of budget did not
+        answer at all, and its prose has to be treated as a failure rather
+        than as the answer.
         """
         if not messages:
             raise ValueError("messages must be a non-empty list")
@@ -251,54 +301,186 @@ class LLMClient:
             "model": self.settings.llm_model,
             "messages": messages,
             "temperature": float(temperature),
-            "max_tokens": int(max_tokens),
+            "max_tokens": int(
+                max_tokens if max_tokens is not None else self.settings.llm_max_tokens
+            ),
             "stream": False,
         }
+        effort = (self.settings.llm_reasoning_effort or "").strip()
+        if effort:
+            # MiniMax's reasoning models accept this and honour it: the
+            # thinking is capped, which is the difference between an answer
+            # and an empty response on a long paper.
+            payload["reasoning_effort"] = effort
+        thinking = (self.settings.llm_thinking or "").strip()
+        if thinking:
+            # "disabled" turns the thinking off on the models that allow it.
+            payload["thinking"] = {"type": thinking}
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.settings.llm_api_key}",
         }
-        backoff = 1.0
         last_exc: Exception | None = None
         for attempt in range(1, self.max_attempts + 1):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.post(url, json=payload, headers=headers)
-                if resp.status_code == 429 or resp.status_code >= 500:
-                    raise httpx.HTTPStatusError(
-                        f"LLM transient status {resp.status_code}",
-                        request=resp.request,
-                        response=resp,
+                # The slot is taken before the park is honoured, so that no
+                # further request goes out while the endpoint is refusing.
+                async with self._concurrency:
+                    await self._respect_park()
+                    # ``trust_env=False`` keeps this call off the machine's HTTP
+                    # proxy. The host runs a local VPN client that exports
+                    # HTTP_PROXY/ALL_PROXY, and it intermittently answers 502 for
+                    # the LLM endpoint: three identical calls returned
+                    # 200, 502, 200 through the proxy and 200, 200, 200 with it
+                    # bypassed. Those 502s were the whole reason the pipeline
+                    # stalled, and they looked exactly like the model being down.
+                    async with httpx.AsyncClient(
+                        timeout=self.timeout, trust_env=False
+                    ) as client:
+                        resp = await client.post(url, json=payload, headers=headers)
+                    if resp.status_code == 429 or resp.status_code >= 500:
+                        raise httpx.HTTPStatusError(
+                            f"LLM transient status {resp.status_code}",
+                            request=resp.request,
+                            response=resp,
+                        )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    self._record_usage(data)
+                    text = _extract_assistant_text(
+                        data, allow_reasoning_fallback=allow_reasoning_fallback
                     )
-                resp.raise_for_status()
-                data = resp.json()
-                text = _extract_assistant_text(data)
-                if not text:
-                    raise ValueError("LLM returned empty assistant message")
-                return text
+                    if not text:
+                        # Not a transport problem, so it is not retried here:
+                        # repeating the same call with the same budget would
+                        # starve the answer the same way. The caller raises the
+                        # budget instead.
+                        raise _EmptyAnswerError("LLM returned empty assistant message")
+                    return text
+            except _EmptyAnswerError:
+                raise
             except (httpx.HTTPError, ValueError) as exc:
                 last_exc = exc
+                rate_limited = isinstance(
+                    exc, httpx.HTTPStatusError
+                ) and exc.response.status_code == 429
                 log.warning(
                     "LLM call attempt %d/%d failed: %s",
                     attempt,
                     self.max_attempts,
-                    exc,
+                    _describe_error(exc),
                 )
                 if attempt >= self.max_attempts:
+                    # A 429 that survived every retry means the account quota
+                    # is saturated, not that this call was unlucky. Parking
+                    # every worker for a while is what lets the quota refill;
+                    # retrying into it keeps it saturated.
+                    if rate_limited:
+                        self._park(seconds=_RATE_LIMIT_PARK_S)
                     break
-                await asyncio.sleep(backoff)
-                backoff *= 2.0
+                # Rate limiting needs a much longer pause than a transient
+                # error, and jitter keeps concurrent workers from waking
+                # together and re-triggering the limit.
+                base = _RATE_LIMIT_BACKOFF_S if rate_limited else 1.0
+                delay = min(base * (2 ** (attempt - 1)), _MAX_BACKOFF_S)
+                delay *= 0.7 + 0.6 * random.random()
+                await asyncio.sleep(delay)
         raise RuntimeError(
             f"LLM call failed after {self.max_attempts} attempts: {last_exc}"
         )
 
-    async def extract_json(self, messages: list[dict[str, str]]) -> list[dict[str, Any]]:
+    def _park(self, *, seconds: float) -> None:
+        """Hold every subsequent call until ``seconds`` have passed.
+
+        The pause is jittered: the requests that are waiting all wake at
+        the same moment otherwise, and they walk straight back into the
+        limit that just refused them.
+        """
+        wait = seconds * (0.7 + 0.6 * random.random())
+        self._parked_until = max(self._parked_until, time.monotonic() + wait)
+        log.warning(
+            "rate limited — pausing all LLM calls for %.0fs", wait
+        )
+
+    def _record_usage(self, data: dict[str, Any]) -> None:
+        """Accumulate the token usage the endpoint reported."""
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            return
+        self.usage["calls"] += 1
+        self.usage["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
+        self.usage["completion_tokens"] += int(usage.get("completion_tokens") or 0)
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            self.usage["cached_tokens"] += int(details.get("cached_tokens") or 0)
+        details = usage.get("completion_tokens_details")
+        if isinstance(details, dict):
+            self.usage["reasoning_tokens"] += int(details.get("reasoning_tokens") or 0)
+
+    async def _respect_park(self) -> None:
+        """Sleep out an active cooldown, if one is in force."""
+        remaining = self._parked_until - time.monotonic()
+        while remaining > 0:
+            await asyncio.sleep(min(remaining, 5.0))
+            remaining = self._parked_until - time.monotonic()
+
+    async def extract_json(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int | None = None,
+        attempts: int = 3,
+    ) -> list[dict[str, Any]]:
         """Call the LLM and return ``list[dict]`` parsed from the response.
 
-        Applies the JSON-recovery chain (wrappers → syntax → truncation).
+        Applies the JSON-recovery chain (wrappers → syntax → truncation →
+        substring extraction).
+
+        A reasoning model spends part of its token budget thinking before it
+        answers, and ``max_tokens`` covers both. When the budget runs out
+        mid-thought the answer comes back empty and only the reasoning
+        survives -- prose, not JSON. So the retry raises the budget instead
+        of repeating the same call: the thinking for a long paper runs to
+        13-20 k tokens, so the first attempt asks for the configured
+        budget and the next ones ask for half again and twice that.
+
+        The reasoning block is never taken as the answer here. A local
+        llama.cpp build can put the answer inside the thinking, but a
+        reasoning model that ran out of budget did not answer at all.
         """
-        raw = await self.chat(messages)
-        return self._parse_json_response(raw)
+        base = max_tokens if max_tokens is not None else self.settings.llm_max_tokens
+        budgets = [base, base * 3 // 2, base * 2]
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            budget = budgets[min(attempt, len(budgets)) - 1]
+            try:
+                raw = await self.chat(
+                    messages,
+                    max_tokens=budget,
+                    allow_reasoning_fallback=False,
+                )
+            except Exception as exc:  # noqa: BLE001 - transport failures retry
+                last_exc = exc
+                log.warning(
+                    "LLM call failed (attempt %d/%d, max_tokens=%d): %s",
+                    attempt,
+                    attempts,
+                    budget,
+                    _describe_error(exc),
+                )
+                continue
+            try:
+                return self._parse_json_response(raw)
+            except ValueError as exc:
+                last_exc = exc
+                log.warning(
+                    "LLM response was not JSON (attempt %d/%d, max_tokens=%d): %s",
+                    attempt,
+                    attempts,
+                    budget,
+                    str(exc)[:160],
+                )
+        raise last_exc if last_exc else ValueError("empty LLM response")
 
     @staticmethod
     def _parse_json_response(raw: str) -> list[dict[str, Any]]:
@@ -329,10 +511,33 @@ class LLMClient:
                 return _coerce_to_list(json.loads(truncated_raw))
             except json.JSONDecodeError:
                 pass
+        # Fifth pass: the answer is embedded in surrounding prose. A
+        # reasoning model that states its plan before answering puts the
+        # JSON inside the text, and so does any model that prefixes its
+        # reply with "Here is the JSON:".
+        embedded = _extract_json_substring(stripped)
+        if embedded is not None:
+            try:
+                return _coerce_to_list(json.loads(embedded))
+            except json.JSONDecodeError:
+                pass
+            repaired_embedded = _fix_json_syntax(embedded)
+            try:
+                return _coerce_to_list(json.loads(repaired_embedded))
+            except json.JSONDecodeError:
+                pass
+            truncated_embedded = _recover_truncated_json(repaired_embedded)
+            if truncated_embedded is not None:
+                try:
+                    return _coerce_to_list(json.loads(truncated_embedded))
+                except json.JSONDecodeError:
+                    pass
         raise ValueError(f"could not parse LLM JSON output: {raw[:200]}...")
 
 
-def _extract_assistant_text(data: dict[str, Any]) -> str:
+def _extract_assistant_text(
+    data: dict[str, Any], *, allow_reasoning_fallback: bool = True
+) -> str:
     """Pull the assistant text from an OpenAI-compatible chat completion."""
     if not isinstance(data, dict):
         return ""
@@ -345,7 +550,7 @@ def _extract_assistant_text(data: dict[str, Any]) -> str:
     message = first.get("message") or {}
     if isinstance(message, dict):
         content = message.get("content")
-        if isinstance(content, str):
+        if isinstance(content, str) and content.strip():
             return content
         # Some providers return ``content`` as a list of parts.
         if isinstance(content, list):
@@ -353,7 +558,20 @@ def _extract_assistant_text(data: dict[str, Any]) -> str:
             for p in content:
                 if isinstance(p, dict) and isinstance(p.get("text"), str):
                     parts.append(p["text"])
-            return "".join(parts)
+            if parts:
+                return "".join(parts)
+        # Reasoning models (GLM / DeepSeek-R1 on llama.cpp, vLLM) spend the
+        # token budget on ``reasoning_content`` first; a truncated response
+        # can leave ``content`` empty while the thinking block still carries
+        # the answer. Falling back keeps the JSON-recovery chain in the
+        # caller working instead of failing the call outright.
+        #
+        # This is wrong for a reasoning model that simply ran out of budget:
+        # its thinking is prose about the answer, not the answer. Callers
+        # that need the answer itself turn the fallback off.
+        reasoning = message.get("reasoning_content")
+        if allow_reasoning_fallback and isinstance(reasoning, str) and reasoning.strip():
+            return reasoning
     text = first.get("text")
     return text if isinstance(text, str) else ""
 
@@ -365,3 +583,45 @@ def _coerce_to_list(obj: Any) -> list[dict[str, Any]]:
     if isinstance(obj, dict):
         return [obj]
     return []
+
+
+def _extract_json_substring(text: str) -> str | None:
+    """Return the outermost JSON array or object embedded in ``text``.
+
+    Used when the model wraps its answer in prose. The array bracket wins
+    over the object bracket: the extractor asks for a list of records, and
+    an array inside an object would be the wrong thing to lift out.
+    """
+    for opener, closer in (("[", "]"), ("{", "}")):
+        start = text.find(opener)
+        if start == -1:
+            continue
+        end = text.rfind(closer)
+        if end > start:
+            return text[start : end + 1]
+    return None
+
+
+def _describe_error(exc: BaseException) -> str:
+    """Describe an LLM call failure in a way that is worth reading.
+
+    ``httpx.HTTPStatusError`` carries no message of its own, so a rejected
+    request used to log as "LLM call attempt 1/3 failed: " and nothing
+    else. The status code and the server's own error text are what
+    actually explain the failure.
+    """
+    detail = str(exc).strip()
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status = getattr(response, "status_code", None)
+        if status is not None:
+            detail = f"{detail or type(exc).__name__} (HTTP {status})"
+        try:
+            body = response.json()
+        except Exception:  # noqa: BLE001 - the body may not be JSON
+            body = None
+        if isinstance(body, dict):
+            error = body.get("error")
+            if isinstance(error, dict) and error.get("message"):
+                detail = f"{detail}: {error['message']}"
+    return detail or type(exc).__name__

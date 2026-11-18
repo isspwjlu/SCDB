@@ -19,6 +19,7 @@ the paper text + (optionally) the materials discovered in step 1. Each
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -45,9 +46,18 @@ BASE_SC_PROPS_SYSTEM_PROMPT: str = (
     "keyed by composition formula (Material_Chemical_Composition); each value "
     "is an object with optional keys: 'Tc', 'T_CDW', 'Hc1', 'Hc2', "
     "'Energy_Gap', 'Coherence_Length', 'Penetration_Depth', "
-    "'Critical_Current_Density'. Each value is an OBJECT "
-    "{'value': <number or 'NA'>, 'unit': <string>}. Use 'NA' for missing values. "
+    "'Critical_Current_Density', 'Pairing_Symmetry', 'Mechanism'. Each value "
+    "is an OBJECT "
+    "{'value': <number or 'NA'>, 'unit': <string>, 'evidence': "
+    "<verbatim quote from the paper, or 'NA'>}. Use 'NA' for missing values. "
     "Use sensible units (K, T, meV, nm, A/cm^2). Never guess.\n\n"
+    "'Pairing_Symmetry' is the symmetry of the order parameter (s-wave, "
+    "d-wave, p-wave, f-wave, triplet, mixed, unconventional) and "
+    "'Mechanism' is what pairs the electrons (phonon-mediated/BCS, "
+    "spin-fluctuation, electronic, spin-triplet, excitonic, "
+    "plasma-mediated). Both are short strings rather than numbers, and both "
+    "need the same evidence quote as a number: report only what this paper "
+    "states about this compound, never what the material is known to be.\n\n"
     "IMPORTANT — extraction rules:\n"
     "1. Read the ENTIRE paper text including every table cell, figure "
     "   caption, and footnote. Tables are the richest source — extract "
@@ -62,7 +72,16 @@ BASE_SC_PROPS_SYSTEM_PROMPT: str = (
     "5. If a value truly is not in the paper (not just hard to find), use "
     "   'NA' — never fabricate.\n"
     "6. Numbers in tables sometimes lack a unit; infer from context "
-    "   (e.g. column header 'T_c (K)' implies Kelvin)."
+    "   (e.g. column header 'T_c (K)' implies Kelvin).\n"
+    "7. **EVIDENCE IS MANDATORY.** Every non-'NA' value must be accompanied "
+    "   by 'evidence': a short VERBATIM quote (a fragment copied character-for-"
+    "   character from the paper, typically 10-40 words) that contains the "
+    "   number. If you cannot quote the sentence or table row where the value "
+    "   appears, the value is not in the paper — set it to 'NA'.\n"
+    "   This is the single most important rule. Values you 'know' about a "
+    "   material from general knowledge do NOT count: if this paper does not "
+    "   state it, it is 'NA'. Never fill in famous textbook values "
+    "   (e.g. Hc2=14 T for MgB2) unless this paper actually prints them."
 )
 
 PRESSURE_TC_SYSTEM_PROMPT: str = (
@@ -141,6 +160,71 @@ def _truncate(text: str, *, max_chars: int = 60000) -> str:
     return text[:max_chars] + "\n\n[...truncated...]"
 
 
+# A number followed by a unit: the shape of a measurement. Paragraphs with
+# one are what the extractor is looking for.
+_MEASUREMENT_RE = re.compile(
+    r"\d+(?:\.\d+)?\s*(?:K|T|GPa|MPa|kbar|K/mu0|K/μ0|A/cm|g/cm3|nm|Å|angstrom|meV|Hz|%)",
+    re.IGNORECASE,
+)
+
+
+def condense_for_prompt(
+    markdown: str,
+    *,
+    head_chars: int = 4000,
+    max_chars: int = 32000,
+) -> str:
+    """Return the parts of a paper worth spending tokens on.
+
+    A reasoning model thinks in proportion to what it reads: the same
+    prompt over 60 k characters of paper costs about 2.5x the thinking --
+    and therefore the time and the output tokens -- of the same prompt
+    over a condensed version. What the extractor needs is not the whole
+    paper but the title block, the section headings, every table (the
+    tables are where the Tc values live) and the sentences that state a
+    measurement.
+
+    The result is a **subset** of the input, which is what makes it safe:
+    the evidence gate still searches the full text, so a quote taken from
+    the condensed version is still verifiable against the paper.
+    """
+    if len(markdown) <= max_chars:
+        return markdown
+
+    lines = markdown.splitlines()
+    head: list[str] = []
+    head_used = 0
+    body: list[str] = []
+    in_table = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            if not in_table:
+                body.append("\n[TABLE]")
+                in_table = True
+            body.append(stripped)
+            continue
+        if in_table:
+            in_table = False
+            body.append("")
+        if stripped.startswith("#"):
+            body.append(stripped)
+            continue
+        if _MEASUREMENT_RE.search(stripped):
+            body.append(stripped)
+            continue
+        if head_used < head_chars:
+            # A single long line must not blow the budget: papers are
+            # line-wrapped, but extracted text is not always.
+            room = head_chars - head_used
+            head.append(stripped[:room])
+            head_used += len(stripped)
+
+    condensed = "\n".join(head) + "\n\n" + "\n".join(body)
+    return condensed[:max_chars]
+
+
 def _compositions_block(materials: list[str] | None) -> str:
     """Format the materials list as a hint for downstream prompts."""
     if not materials:
@@ -176,8 +260,10 @@ def build_base_sc_props_prompt(
     user = (
         "Extract the base superconductor measurements (Tc, T_CDW, Hc1, Hc2, "
         "Energy_Gap, Coherence_Length, Penetration_Depth, "
-        "Critical_Current_Density) for every composition listed. If a value is "
-        "missing, write 'NA'.\n\n"
+        "Critical_Current_Density) for every composition listed, plus the "
+        "Pairing_Symmetry (s-wave, d-wave, p-wave, ...) and the Mechanism "
+        "(phonon-mediated, spin-fluctuation, ...) if the paper states them. "
+        "If a value is missing, write 'NA'.\n\n"
         f"DOI: {doi or '(unknown)'}\n\n"
         f"{_compositions_block(materials)}\n\n"
         f"Paper text:\n{_truncate(text)}"

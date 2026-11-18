@@ -51,6 +51,19 @@ from superconductor_db.ingest.paper_search import (
     search_all_sources,
 )
 
+
+def _default_database_url() -> str:
+    """Fall back to the configured DATABASE_URL.
+
+    A hard-coded relative ``sqlite:///./_dev.db`` silently creates a new
+    empty database whenever the process starts from a different working
+    directory, which looks like total data loss.
+    """
+    from superconductor_db.core.config import get_settings
+
+    return get_settings().database_url or "sqlite:///./_dev.db"
+
+
 log = logging.getLogger("demo_runner")
 logging.basicConfig(
     level=logging.INFO,
@@ -209,7 +222,7 @@ def run_one_batch(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("--database-url", default="sqlite:///./_dev.db",
+    parser.add_argument("--database-url", default=_default_database_url(),
                         help="SQLAlchemy DSN (default: sqlite:///./_dev.db)")
     parser.add_argument("--queries", nargs="*", default=None,
                         help="Override the SC search queries")

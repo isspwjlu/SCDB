@@ -146,7 +146,7 @@ async def search_arxiv(
     """
     owns_client = client is None
     if owns_client:
-        client = httpx.AsyncClient(timeout=timeout)
+        client = httpx.AsyncClient(timeout=timeout, trust_env=False)
     try:
         params = {
             "search_query": f"all:{query}",
@@ -222,7 +222,7 @@ async def search_crossref(
 ) -> list[PaperMetadata]:
     owns_client = client is None
     if owns_client:
-        client = httpx.AsyncClient(timeout=timeout)
+        client = httpx.AsyncClient(timeout=timeout, trust_env=False)
     try:
         resp = await client.get(
             _CROSSREF_API,
@@ -289,7 +289,7 @@ async def search_semantic_scholar(
 ) -> list[PaperMetadata]:
     owns_client = client is None
     if owns_client:
-        client = httpx.AsyncClient(timeout=timeout)
+        client = httpx.AsyncClient(timeout=timeout, trust_env=False)
     try:
         resp = await client.get(
             _S2_API,

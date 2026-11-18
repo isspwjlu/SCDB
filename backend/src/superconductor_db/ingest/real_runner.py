@@ -41,6 +41,19 @@ from superconductor_db.ingest.llm_client import LLMClient
 from superconductor_db.ingest.paper_search import SC_SEARCH_QUERIES
 from superconductor_db.ingest.runner import JobResult, run_job
 
+
+def _default_database_url() -> str:
+    """Fall back to the configured DATABASE_URL.
+
+    A hard-coded relative ``sqlite:///./_dev.db`` silently creates a new
+    empty database whenever the process starts from a different working
+    directory, which looks like total data loss.
+    """
+    from superconductor_db.core.config import get_settings
+
+    return get_settings().database_url or "sqlite:///./_dev.db"
+
+
 log = logging.getLogger("real_runner")
 logging.basicConfig(
     level=logging.INFO,
@@ -108,7 +121,7 @@ async def _run_batch(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("--database-url", default="sqlite:///./_dev.db")
+    parser.add_argument("--database-url", default=_default_database_url())
     parser.add_argument("--queries", nargs="*", default=None)
     parser.add_argument("--queries-file", default=None)
     parser.add_argument("--batch-size", type=int, default=2,

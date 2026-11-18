@@ -4,14 +4,19 @@ scansci-pdf is the project-wide MCP for paper retrieval. We invoke it via
 ``asyncio.create_subprocess_exec`` so the heavy lifting (WebVPN, CARSI, Tor,
 13+ source racing) stays in one place. The wrapper:
 
-- Subprocesses ``scansci-pdf smart_download --doi <doi> --output-dir <dir>``
-  (or ``--url <url>``).
+- Subprocesses ``scansci-pdf get <doi-or-url> --output <dir>``. The identifier
+  is positional — the CLI has no ``--url`` flag.
 - Caches the resulting PDF in ``settings.pdf_cache_dir`` keyed by SHA-256 of
   the DOI / URL. Cache hit returns immediately without re-running the CLI.
 - Parses the JSON ``{path: ...}`` payload from stdout.
-- Exposes :func:`parse_pdf_to_markdown` which uses :mod:`pymupdf` to convert
-  a downloaded PDF into a single markdown string (sufficient for the LLM
-  extractor to ingest).
+- Exposes :func:`parse_pdf_to_markdown`, which converts a downloaded PDF into
+  a single markdown string with :mod:`docling` (see
+  :mod:`superconductor_db.ingest.docling_parser`).
+
+When the plain HTTP routes fail, the article page is opened in **ego lite**
+(:mod:`superconductor_db.ingest.ego_fetch`) and the PDF is pulled out of the
+rendered page. No Edge and no QQ Browser are involved anywhere in the
+download path.
 
 All subprocess failures raise :class:`ScanSciError` so the worker can
 ``SKIP LOCKED`` past them.
@@ -31,13 +36,27 @@ from pathlib import Path
 from typing import Any
 
 from superconductor_db.core.config import Settings, get_settings
+from superconductor_db.ingest.docling_parser import parse_pdf_async
+from superconductor_db.ingest.direct_fetch import (
+    fetch_arxiv_pdf,
+    fetch_direct_pdf,
+    fetch_iop_pdf,
+)
+from superconductor_db.ingest.ego_fetch import fetch_doi_pdf
 
 log = logging.getLogger(__name__)
 
 # Strict allowlist for DOI characters: alphanumerics, plus the DOI
-# punctuation ``. / : - _``. Reject anything else (control chars, shell
-# metacharacters, whitespace) before passing to the subprocess.
-_SAFE_DOI = re.compile(r"^[0-9A-Za-z./:_\-]+$")
+# punctuation ``. / : - _``, parentheses, and the SICI separators
+# ``+ ; < >``. The parentheses are part of real DOIs -- Elsevier writes
+# them into its article ids, e.g. ``10.1016/S1876-3804(23)60415-X`` --
+# and Wiley's SICI form uses all three of the separators, e.g.
+# ``10.1002/(SICI)1521-3951(199909)215:1<587::AID-PSSB587>3.0.CO;2-P``.
+# The subprocess is invoked with an argument list, never through a shell,
+# so they carry no quoting risk. Everything else (control chars, shell
+# metacharacters, whitespace) is still rejected before the value reaches
+# the subprocess.
+_SAFE_DOI = re.compile(r"^[0-9A-Za-z./:_\-()+<>;]+$")
 
 # URL allowlist is broader: scheme + path/query characters. We still reject
 # whitespace, control chars, and shell metacharacters.
@@ -72,6 +91,48 @@ def _cached_pdf_path(cache_dir: Path, key: str) -> Path:
     return cache_dir / f"{key}.pdf"
 
 
+# scansci-pdf maintains ``.doi_index.json`` in the cache directory, mapping each
+# DOI to the file it actually retrieved (which it names ``<doi>_<source>.pdf``
+# and may have stored as several source-specific variants). The SHA-256 filename
+# this module writes is only used for files it downloaded itself, so without
+# reading the index every previously-downloaded paper is treated as a cache miss
+# and re-fetched — and re-fetches of publisher DOIs time out behind paywalls.
+_DOI_INDEX_NAME = ".doi_index.json"
+
+
+def _indexed_pdf_path(cache_dir: Path, doi: str) -> Path | None:
+    """Return the cached PDF for ``doi`` recorded in the scansci-pdf index.
+
+    Returns ``None`` when the DOI is absent, the index is unreadable, or the
+    recorded file no longer exists on disk.
+    """
+    index_path = cache_dir / _DOI_INDEX_NAME
+    if not index_path.exists():
+        return None
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    entry = index.get(doi) if isinstance(index, dict) else None
+    if isinstance(entry, dict):
+        file_name = entry.get("file")
+        if not file_name:
+            # Older entries stored a bare filename.
+            file_name = entry.get("path") or entry.get("name")
+    else:
+        file_name = entry
+    if not file_name:
+        return None
+    candidate = Path(str(file_name))
+    if candidate.exists() and candidate.stat().st_size > 0:
+        return candidate
+    # The index may store a bare filename relative to the cache directory.
+    alt = cache_dir / candidate.name
+    if alt.exists() and alt.stat().st_size > 0:
+        return alt
+    return None
+
+
 def _sanitize_doi(doi: str) -> str:
     """Strip control chars + reject any character outside the DOI allowlist.
 
@@ -80,6 +141,11 @@ def _sanitize_doi(doi: str) -> str:
     """
     cleaned = re.sub(r"[\x00-\x1f\x7f]", "", doi)
     if not _SAFE_DOI.match(cleaned):
+        raise ValueError(f"unsafe DOI identifier: {doi!r}")
+    # "." and "/" are DOI punctuation, so the allowlist cannot keep them
+    # out on its own. A pair of dots is a path traversal, and no real DOI
+    # carries one.
+    if ".." in cleaned:
         raise ValueError(f"unsafe DOI identifier: {doi!r}")
     return cleaned
 
@@ -228,6 +294,44 @@ async def download_pdf(
     if cached_path.exists() and cached_path.stat().st_size > 0:
         log.debug("download_pdf: cache hit for doi=%s -> %s", doi, cached_path)
         return cached_path
+    # scansci-pdf's own index knows about PDFs retrieved by earlier runs, which
+    # it names differently. Check it before hitting the network.
+    indexed = _indexed_pdf_path(cache_dir, doi)
+    if indexed is not None:
+        log.info("download_pdf: index cache hit for doi=%s -> %s", doi, indexed.name)
+        return indexed
+
+    # Direct publisher fetch first for the venues that answer a plain request.
+    # scansci-pdf routes everything else through Sci-Hub, which sits behind a
+    # Cloudflare challenge it cannot clear here; IOP redirects to
+    # validate.perfdrive.com and Elsevier/Wiley answer 403. Nature-family
+    # papers are served directly and need none of that.
+    direct = await asyncio.to_thread(fetch_direct_pdf, doi)
+    if direct:
+        cached_path.write_bytes(direct)
+        return cached_path
+
+    # IOP's article page is behind an hCaptcha, but its PDF endpoint answers a
+    # plain request with a Referer. This is the route to Superconducting
+    # Science and Technology, which arXiv does not cover.
+    iop = await asyncio.to_thread(fetch_iop_pdf, doi)
+    if iop:
+        cached_path.write_bytes(iop)
+        return cached_path
+
+    # Then the arXiv preprint, when the journal paper has one. This covers a
+    # good share of Physical Review papers, whose content is identical.
+    preprint = await asyncio.to_thread(fetch_arxiv_pdf, doi)
+    if preprint:
+        cached_path.write_bytes(preprint)
+        return cached_path
+
+    # Then ego lite: open the article page in a real browser, read the PDF
+    # link out of it and fetch the file with the browser's cookies. This is
+    # the channel for publishers that answer a challenge instead of the
+    # article, or that render the link client-side.
+    if await fetch_doi_pdf(doi, cached_path):
+        return cached_path
 
     payload = await _run_scansci(
         ["get", doi, "--output", str(cache_dir)],
@@ -263,7 +367,7 @@ async def download_pdf_from_url(
     settings: Settings | None = None,
     timeout: float = 180.0,
 ) -> Path:
-    """Download the PDF at ``url`` via scansci-pdf (``--url`` flag)."""
+    """Download the PDF at ``url`` via ``scansci-pdf get <url>``."""
     url = _sanitize_url(url)
     settings = settings or get_settings()
     cache_dir = _ensure_dir(Path(settings.pdf_cache_dir))
@@ -298,32 +402,17 @@ async def download_pdf_from_url(
 
 
 async def parse_pdf_to_markdown(pdf_path: Path) -> str:
-    """Convert ``pdf_path`` to a single markdown string using PyMuPDF.
+    """Convert ``pdf_path`` to a single markdown string using docling.
 
-    Each page is rendered as a heading + paragraphs joined by blank lines.
-    We keep page boundaries so the LLM can reference "Page 4" if needed.
+    docling reconstructs the page layout, so tables arrive as markdown
+    tables instead of a flat run of numbers. The result is cached on disk
+    (see :mod:`superconductor_db.ingest.docling_parser`), because a
+    conversion costs seconds and the loop may revisit the same paper.
     """
     try:
-        import fitz  # type: ignore[import-not-found]  # PyMuPDF
-    except ImportError as exc:
-        raise ScanSciError(
-            "PyMuPDF is required for PDF parsing; install pymupdf"
-        ) from exc
-
-    if not pdf_path.exists():
-        raise ScanSciError(f"PDF not found: {pdf_path}")
-
-    doc = fitz.open(str(pdf_path))
-    parts: list[str] = []
-    try:
-        for i, page in enumerate(doc, start=1):
-            text = page.get_text("text") or ""
-            if not text.strip():
-                continue
-            parts.append(f"\n\n## Page {i}\n\n" + text.strip())
-    finally:
-        doc.close()
-    return "".join(parts).strip()
+        return await parse_pdf_async(pdf_path)
+    except FileNotFoundError as exc:
+        raise ScanSciError(str(exc)) from exc
 
 
 # Re-exported for tests so they can stub subprocesses easily.

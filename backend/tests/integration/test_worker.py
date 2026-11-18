@@ -91,7 +91,20 @@ async def test_worker_processes_one_job_and_inserts_material(db_session) -> None
         fake_extract_json.called += 1
         if fake_extract_json.called == 1:
             return [{"Material_Chemical_Composition": "YBa2Cu3O7", "Experimental": True}]
-        return [{"YBa2Cu3O7": {"Tc": {"value": 92, "unit": "K"}, "Superconductor_Family": "cuprate"}}]
+        return [
+            {
+                "YBa2Cu3O7": {
+                    "Tc": {
+                        "value": 92,
+                        "unit": "K",
+                        # The stub markdown below is the paper text, and
+                        # extracted values must be quotable from it.
+                        "evidence": "YBa2Cu3O7 Tc 92 K cuprate",
+                    },
+                    "Superconductor_Family": "cuprate",
+                }
+            }
+        ]
 
     client = object.__new__(LLMClient)
     client.extract_json = fake_extract_json  # type: ignore[method-assign]

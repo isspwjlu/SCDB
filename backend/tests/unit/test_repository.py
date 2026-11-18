@@ -91,7 +91,7 @@ def test_aggregate_overview_returns_zero_when_empty(session: Session) -> None:
     assert summary["total"] == 0
     assert summary["max_tc"] is None
     assert summary["max_hc2"] is None
-    assert summary["family_counts"] == {}
+    assert summary["family_counts"] == []
 
 
 def test_aggregate_overview_counts_and_max(session: Session) -> None:
@@ -103,7 +103,10 @@ def test_aggregate_overview_counts_and_max(session: Session) -> None:
     assert summary["total"] == 3
     assert summary["max_tc"] == 133.0
     assert summary["max_hc2"] == 200.0
-    assert summary["family_counts"] == {"cuprate": 2, "MgB2": 1}
+    assert summary["family_counts"] == [
+        {"family": "cuprate", "count": 2},
+        {"family": "MgB2", "count": 1},
+    ]
 
 
 def test_tc_distribution_empty_when_no_data(session: Session) -> None:
