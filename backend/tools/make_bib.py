@@ -55,6 +55,7 @@ DOIS = (
     # Superconductivity physics.
     "10.1038/nature14964",
     "10.1038/s41586-019-1201-8",
+    "10.1088/1361-6633/ac5a60",
     # Machine learning for superconductors.
     "10.1038/s41524-018-0085-8",
     "10.1021/acs.jcim.4c01137",
@@ -86,6 +87,7 @@ JOURNALS = {
     "Chemical Society Reviews": "Chem. Soc. Rev.",
     "Computational Materials Science": "Comput. Mater. Sci.",
     "Machine Learning: Science and Technology": "Mach. Learn.: Sci. Technol.",
+    "Reports on Progress in Physics": "Rep. Prog. Phys.",
 }
 
 # The references that are not journal articles.
@@ -199,16 +201,30 @@ def main() -> int:
 
     entries: list[str] = []
     failures: list[str] = []
+    used: set[str] = set()
     for doi in DOIS:
         meta = crossref(doi)
         if meta is None:
             failures.append(doi)
             continue
         title = (meta.get("title") or [""])[0] or doi
-        key = re.sub(r"[^A-Za-z0-9]", "", title)[:12]
-        key = f"{key}{meta.get('issued', {}).get('date-parts', [[None]])[0][0]}"
-        entries.append(bib_entry(key.lower(), meta))
-        print(f"  ✓ {doi}  →  {key.lower()}")
+        year = meta.get("issued", {}).get("date-parts", [[None]])[0][0]
+        stem = re.sub(r"[^A-Za-z0-9]", "", title)
+        # Two papers can share the first words of their titles, so a
+        # key that is already taken is made unique by taking more of
+        # the title.
+        key = f"{stem[:12]}{year}".lower()
+        if key in used:
+            for length in range(13, len(stem) + 1):
+                candidate = f"{stem[:length]}{year}".lower()
+                if candidate not in used:
+                    key = candidate
+                    break
+            else:
+                key = f"{key}{doi.split('/')[-1][:4]}".lower()
+        used.add(key)
+        entries.append(bib_entry(key, meta))
+        print(f"  ✓ {doi}  →  {key}")
 
     for key, fields in MANUAL.items():
         entries.append(manual_entry(key, fields))
