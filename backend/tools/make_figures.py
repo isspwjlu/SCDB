@@ -296,6 +296,69 @@ def figure_three(out: Path, materials: list[dict]) -> None:
     plt.close(fig)
 
 
+
+def figure_audit(out: Path) -> None:
+    """What the independent audit found."""
+    path = BACKEND / "data" / "cache" / "audit_qwen.jsonl"
+    if not path.exists():
+        return
+    rows = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    rows = [r for r in rows if r.get("value") != "error"]
+    if not rows:
+        return
+
+    value_labels = ["yes", "no", "unclear"]
+    material_labels = ["yes", "no", "unclear"]
+    matrix = np.zeros((3, 3))
+    for row in rows:
+        i = value_labels.index(row["value"]) if row["value"] in value_labels else 2
+        j = material_labels.index(row["material"]) if row["material"] in material_labels else 2
+        matrix[i, j] += 1
+
+    fig, (ax, bx) = plt.subplots(
+        1, 2, figsize=(COL / 2.54, 4.0 / 2.54), gridspec_kw={"width_ratios": [1, 1.15]}
+    )
+    image = ax.imshow(matrix, cmap="Blues", vmin=0, vmax=matrix.max())
+    for i in range(3):
+        for j in range(3):
+            value = int(matrix[i, j])
+            if value:
+                ax.text(
+                    j,
+                    i,
+                    str(value),
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    color="white" if value > matrix.max() / 2 else "#14141a",
+                )
+    ax.set_xticks(range(3), ["yes", "no", "?"])
+    ax.set_yticks(range(3), ["yes", "no", "?"])
+    ax.set_xlabel("the value is in the text")
+    ax.set_ylabel("the text is about this material")
+    ax.set_title("(a)  the independent audit", loc="left")
+    fig.colorbar(image, ax=ax, fraction=0.046, pad=0.03)
+
+    kinds = ["measurement", "calculation", "unclear"]
+    counts = [sum(1 for r in rows if r["kind"] == k) for k in kinds]
+    colors = [PALETTE[2], PALETTE[1], "#999999"]
+    bx.bar(["measured", "calculated", "?"], counts, color=colors, edgecolor="none")
+    bx.set_xticks(range(3), ["measured", "calculated", "?"], rotation=20, ha="right")
+    for i, value in enumerate(counts):
+        bx.text(i, value, f" {value}", ha="center", fontsize=7)
+    bx.set_ylabel("records")
+    bx.set_title("(b)  what the value is", loc="left")
+    bx.set_ylim(0, max(counts) * 1.18)
+
+    fig.tight_layout(pad=0.5, w_pad=1.6)
+    fig.savefig(out / "fig3_audit.pdf")
+    plt.close(fig)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default=str(BACKEND.parent / "paper" / "figures"))
@@ -308,6 +371,7 @@ def main() -> int:
     figure_one(out, stats)
     figure_two(out, materials)
     figure_three(out, materials)
+    figure_audit(out)
     print(f"图 → {out}")
     for path in sorted(out.glob("*.pdf")):
         print(f"   {path.name}  {path.stat().st_size / 1024:.0f} KB")
