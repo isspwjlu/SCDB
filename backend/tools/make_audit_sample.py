@@ -113,6 +113,13 @@ def main() -> int:
     parser.add_argument(
         "--out", default=str(BACKEND / "data" / "cache" / "audit_sample.jsonl")
     )
+    parser.add_argument(
+        "--include",
+        default="",
+        help="a file of record ids that must be in the sample (one per line, "
+        "or a JSONL whose 'id' field is read); used to keep the records "
+        "the expert already judged in the machine judge's sample",
+    )
     args = parser.parse_args()
 
     db = sqlite3.connect(BACKEND / "_dev.db")
@@ -160,9 +167,44 @@ def main() -> int:
     for group in strata.values():
         rng.shuffle(group)
 
+    # The records that must be in the sample: the ones the expert has
+    # already judged, so that the two judges still meet on the same
+    # records after the corpus has moved on.
+    forced: list[dict] = []
+    if args.include:
+        wanted = set()
+        path = Path(args.include)
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("{"):
+                wanted.add(json.loads(line).get("id"))
+            else:
+                wanted.add(line)
+        by_id = {record["id"]: record for record in records}
+        for identifier in wanted:
+            record = by_id.get(identifier)
+            if record is None:
+                print(f"  ! 记录 {identifier} 已不在库里，跳过")
+                continue
+            forced.append(record)
+        for record in forced:
+            strata[(record["family"], record["band"])].remove(record)
+
     # Round-robin over the strata, so every non-empty cell is covered
     # before any cell is asked for a second sample.
-    picked: list[dict] = []
+    picked: list[dict] = list(forced)
+    if forced:
+        # The forced records already carry the hard cases; filling the
+        # rest from the easy ones keeps the proportion of hard cases in
+        # the sample the same as in a draw without the forced records.
+        for key in strata:
+            strata[key] = [
+                record for record in strata[key]
+                if not record["hard_case"] and not record["multi_source"]
+            ]
     order = sorted(strata, key=lambda key: (-len(strata[key]), key))
     index = 0
     while len(picked) < args.n and any(strata[key] for key in order):

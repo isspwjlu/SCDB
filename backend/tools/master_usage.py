@@ -1,18 +1,23 @@
-"""Recompute every pipeline number the paper quotes, from the master's log.
+"""Recompute the pipeline statistics from the master's extraction log.
 
 The extraction log on the master grows as the corpus grows, so the
-numbers in the paper have to be recomputed and stored, not remembered.
-This script runs the same counting on the master and writes the result
-to backend/data/cache/pipeline_stats.json, which is what the paper
-quotes.
+numbers the paper quotes have to be computed at a fixed moment rather
+than recounted whenever the script runs.  The moment is the release:
+the script is given the time of the corpus snapshot, and only the log
+lines up to that time are counted.  Everything the log holds after the
+release belongs to the next one.
+
+The result is written to ``backend/data/cache/pipeline_stats.json``;
+``tools/freeze_audit.py`` copies it into the paper's own directory.
 
 Usage::
 
-    D:\\anaconda3\\python.exe tools/master_usage.py
+    D:\\anaconda3\\python.exe tools/master_usage.py [--until 2026-11-19T20:22:41]
 """
 
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import sys
@@ -26,9 +31,14 @@ OUT = BACKEND / "data" / "cache" / "pipeline_stats.json"
 
 REMOTE_PY = r'''
 import json
+import os
 import re
+import sqlite3
+import sys
 
 LOG = "CORPUS_DIR/extraction.log"
+DB = "CORPUS_DIR/_dev.db"
+UNTIL = sys.argv[1] if len(sys.argv) > 1 else ""
 
 PAPER = re.compile(r"--- ingest (\S+) ---")
 SUMMARY = re.compile(
@@ -40,28 +50,32 @@ USAGE = re.compile(
     r"LLM usage: (\d+) calls, prompt (\d+) \(cached (\d+)\), "
     r"completion (\d+) \(reasoning (\d+)\)"
 )
+STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),")
 
 EVIDENCE = "no verbatim evidence found"
 BINDING = "is not stated for this material"
 CALCULATION = "is a calculation"
 OTHER = "other"
 
-# Per paper, the last run wins -- the same caliber the gate statistics use.
 papers = {}
 current = None
 run_reason = {}
 run_field = {}
 run_proposed = 0
-run_usage = None
-segments = {}
-seg_prev = None
-usage_lines = 0
+last_seen = ""
 
 FIELDS = ("calls", "prompt", "cached", "completion", "reasoning")
 usage_total = dict.fromkeys(FIELDS, 0)
+usage_lines = 0
+seg_prev = None
 
 with open(LOG, encoding="utf-8", errors="replace") as handle:
     for line in handle:
+        stamp = STAMP.match(line)
+        if stamp:
+            last_seen = stamp.group(1)
+            if UNTIL and last_seen > UNTIL.replace("T", " "):
+                break
         found = PAPER.search(line)
         if found:
             current = found.group(1)
@@ -129,6 +143,7 @@ usage_total["usage_lines"] = usage_lines
 usage_total["total_tokens"] = usage_total["prompt"] + usage_total["completion"]
 
 result = {
+    "until": UNTIL or last_seen,
     "papers": len(papers),
     "records_proposed": sum(r["proposed"] for r in papers.values()),
     "records_extracted": sum(r["extracted"] for r in papers.values()),
@@ -139,28 +154,45 @@ result = {
     "rejected_by_field": sorted(by_field.items(), key=lambda kv: -kv[1]),
     "llm_usage": usage_total,
 }
+
+db = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+result["corpus"] = {
+    "papers": db.execute("select count(*) from papers").fetchone()[0],
+    "materials_raw": db.execute("select count(*) from materials").fetchone()[0],
+    "mtime": os.path.getmtime(DB),
+}
+db.close()
+
 print(json.dumps(result, indent=2))
 '''
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--until",
+        default="",
+        help="the release, as YYYY-MM-DDTHH:MM:SS; log lines after it are "
+        "not counted, so the numbers do not move under the paper",
+    )
+    args = parser.parse_args()
+
     payload = base64.b64encode(REMOTE_PY.encode("utf-8")).decode("ascii")
     ssh = connect()
     try:
         out = run(
             f"echo {payload} | base64 -d > /tmp/_pipeline_stats.py && "
-            "python3 /tmp/_pipeline_stats.py",
+            f"python3 /tmp/_pipeline_stats.py {args.until}",
             ssh=ssh,
         )
     finally:
         ssh.close()
 
-    marker = "}"
-    start = out.find("{")
-    data = json.loads(out[start:])
+    data = json.loads(out[out.find("{") :])
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(data, indent=2), encoding="utf-8")
     print(f"wrote {OUT}")
+    print(f"  截止 {data['until']}")
     for key in (
         "papers",
         "records_proposed",
