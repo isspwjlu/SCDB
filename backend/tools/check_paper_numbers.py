@@ -194,6 +194,27 @@ def main() -> int:
         and f"of the {cup_c} cuprate records" in flat,
     )
 
+    print("\n=== 关系图的数字 ===")
+    site = BACKEND / "data" / "cache" / "site"
+    if (site / "tc-vs-hc2.json").exists():
+        hc2 = json.loads((site / "tc-vs-hc2.json").read_text(encoding="utf-8"))
+        gap = json.loads((site / "gap-vs-tc.json").read_text(encoding="utf-8"))
+        pressure = json.loads(
+            (site / "pressure-series.json").read_text(encoding="utf-8")
+        )["series"]
+        hydride_max = max(
+            r["hc2"] for r in hc2 if r["family"] == "high-pressure hydride"
+        )
+        hydride_max = int(hydride_max) if hydride_max == int(hydride_max) else hydride_max
+        check(f"水合物 Hc2 上限 {hydride_max} T", f"{hydride_max}~T" in flat)
+        slope = 3.52 * 0.08617
+        above = sum(1 for r in gap if r["gap"] > slope * r["tc"])
+        share = round(100 * above / len(gap))
+        check(f"能隙在 BCS 线之上的 {share}%", f"a third of them above" in flat)
+        peak = max(max(p["tc"] for p in s["points"]) for s in pressure)
+        check(f"镍酸盐峰值 {peak:.0f} K", f"{peak:.0f}~K" in flat)
+        check(f"压强系列 {len(pressure)} 条", f"eleven\ncurves" in flat or "eleven curves" in flat)
+
     print(f"\n{checks - len(failures)}/{checks} 项通过")
     if failures:
         print("未通过：")

@@ -56,6 +56,9 @@ GREEN = "#009E73"
 GREY = "#7F7F7F"
 LIGHT = "#BFBFBF"
 
+# Okabe-Ito, the colour-blind-safe set, in a print-friendly order.
+PALETTE = ("#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9")
+
 APS = {
     "figure.dpi": 200,
     "savefig.dpi": 600,
@@ -602,6 +605,165 @@ def figure_pipeline(out: Path, stats: dict) -> None:
     plt.close(fig)
 
 
+def figure_relations(out: Path) -> None:
+    """What the database says about the physics: four relations.
+
+    These are the charts the website draws; they are redrawn here from
+    the same data so that they can be printed.
+    """
+    site = BACKEND / "data" / "cache" / "site"
+    if not (site / "tc-vs-hc2.json").exists():
+        return
+    hc2 = json.loads((site / "tc-vs-hc2.json").read_text(encoding="utf-8"))
+    gap = json.loads((site / "gap-vs-tc.json").read_text(encoding="utf-8"))
+    best = json.loads((site / "family-best.json").read_text(encoding="utf-8"))
+    pressure = json.loads((site / "pressure-series.json").read_text(encoding="utf-8"))
+
+    fig, axes = plt.subplots(
+        2, 2, figsize=(FULL_CM / 2.54, 11.4 / 2.54), constrained_layout=True
+    )
+
+    # (a) the transition temperature against the upper critical field
+    ax = axes[0][0]
+    families = sorted({r["family"] for r in hc2 if r["family"]})
+    palette = list(PALETTE) + ["#8C564B", "#7F7F7F"]
+    for index, family in enumerate(families):
+        points = [(r["tc"], r["hc2"]) for r in hc2 if r["family"] == family]
+        ax.scatter(
+            [p[0] for p in points],
+            [p[1] for p in points],
+            s=9,
+            color=palette[index % len(palette)],
+            edgecolor="none",
+            alpha=0.8,
+            label=family,
+            zorder=3,
+        )
+    others = [(r["tc"], r["hc2"]) for r in hc2 if not r["family"]]
+    ax.scatter(
+        [p[0] for p in others],
+        [p[1] for p in others],
+        s=9,
+        color="#9E9E9E",
+        edgecolor="none",
+        alpha=0.6,
+        label="unclassified conventional",
+        zorder=3,
+    )
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("$T_c$ (K)")
+    ax.set_ylabel("$H_{c2}$ (T)")
+    ax.set_title("(a)  $T_c$ against the upper critical field", loc="left")
+    ax.legend(
+        frameon=False,
+        fontsize=5.2,
+        loc="lower left",
+        ncol=3,
+        handletextpad=0.2,
+        columnspacing=0.8,
+        borderpad=0.1,
+        labelspacing=0.25,
+    )
+
+    # (b) the energy gap against the transition temperature
+    ax = axes[0][1]
+    ax.scatter(
+        [r["tc"] for r in gap],
+        [r["gap"] for r in gap],
+        s=9,
+        color=BLUE,
+        edgecolor="none",
+        alpha=0.65,
+        zorder=3,
+    )
+    slope = 3.52 * 0.08617  # 2*Delta/kB*Tc = 3.52, kB in meV/K
+    xs = np.array([0.01, 300.0])
+    ax.plot(xs, slope * xs, color=ORANGE, lw=1.0, ls=(0, (5, 2)), zorder=4)
+    ax.text(
+        0.013,
+        12.0,
+        "BCS weak coupling\n$2\\Delta/k_{\\rm B}T_c = 3.52$",
+        fontsize=6,
+        color=ORANGE,
+        va="bottom",
+    )
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("$T_c$ (K)")
+    ax.set_ylabel("$\\Delta$ (meV)")
+    ax.set_title("(b)  the energy gap against $T_c$", loc="left")
+
+    # (c) the best record of each family
+    ax = axes[1][0]
+    items = sorted(best, key=lambda r: r["tc"])
+    ax.barh(
+        [r["family"] for r in items],
+        [r["tc"] for r in items],
+        color=GREEN,
+        edgecolor="none",
+        height=0.72,
+    )
+    for i, row in enumerate(items):
+        ax.text(row["tc"], i, f" {row['tc']:.0f}", va="center", fontsize=6.5)
+    ax.set_xlabel("highest $T_c$ in the family (K)")
+    ax.set_title("(c)  the best record of each family", loc="left")
+    ax.set_xlim(0, max(r["tc"] for r in items) * 1.16)
+    ax.tick_params(axis="y", labelsize=6.5)
+
+    # (d) the pressure dependence of the nickelates
+    ax = axes[1][1]
+    series = sorted(pressure["series"], key=lambda s: s["composition"])
+    peaks = []
+    for index, entry in enumerate(series):
+        points = sorted(entry["points"], key=lambda p: p["pressure"])
+        colour = palette[index % len(palette)]
+        ax.plot(
+            [p["pressure"] for p in points],
+            [p["tc"] for p in points],
+            color=colour,
+            lw=1.0,
+            marker="o",
+            ms=2.5,
+            markeredgecolor="none",
+            zorder=3,
+        )
+        peak = max(points, key=lambda p: p["tc"])
+        peaks.append((peak["tc"], peak["pressure"], entry["composition"], colour))
+    # The labels sit at the peaks and are pushed apart, so that the
+    # colour is only an aid to reading them.
+    peaks.sort(reverse=True)
+    placed: list[float] = []
+    for value, x_value, name, colour in peaks:
+        y_value = value
+        while any(abs(y_value - other) < 5.0 for other in placed):
+            y_value -= 5.0
+        placed.append(y_value)
+        ax.annotate(
+            name,
+            xy=(x_value, value),
+            xytext=(x_value + 2.5, y_value),
+            fontsize=5.2,
+            color=colour,
+            va="center",
+            bbox={"fc": "white", "ec": "none", "alpha": 0.75, "pad": 0.6},
+        )
+    ax.set_xlabel("pressure (GPa)")
+    ax.set_ylabel("$T_c$ (K)")
+    ax.set_title("(d)  the nickelates under pressure", loc="left")
+    ax.set_xlim(left=0)
+
+    export_figure(
+        fig,
+        basename=str(out / "fig6_relations"),
+        formats=["pdf", "png"],
+        size_inches=(FULL_CM / 2.54, 11.4 / 2.54),
+        tight=False,
+        grayscale_preview=True,
+    )
+    plt.close(fig)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default=str(BACKEND.parent / "paper" / "figures"))
@@ -619,6 +781,7 @@ def main() -> int:
     figure_coverage(out)
     figure_audit(out)
     figure_tail(out, materials)
+    figure_relations(out)
 
     print(f"\n图 → {out}")
     for path in sorted(out.glob("*.pdf")):
