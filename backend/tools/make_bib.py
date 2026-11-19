@@ -66,6 +66,28 @@ DOIS = (
     "10.1103/wn98-9yc7",
 )
 
+# The journal names, as Physical Review abbreviates them.
+JOURNALS = {
+    "Journal of Magnetism and Magnetic Materials": "J. Magn. Magn. Mater.",
+    "Advanced Engineering Informatics": "Adv. Eng. Inf.",
+    "Science and Technology of Advanced Materials": "Sci. Technol. Adv. Mater.",
+    "Nature Communications": "Nat. Commun.",
+    "Physical Review B": "Phys. Rev. B",
+    "Physical Review Letters": "Phys. Rev. Lett.",
+    "Scientific Data": "Sci. Data",
+    "Scientific Reports": "Sci. Rep.",
+    "Nucleic Acids Research": "Nucleic Acids Res.",
+    "APL Materials": "APL Mater.",
+    "Chemistry of Materials": "Chem. Mater.",
+    "Journal of Chemical Information and Modeling": "J. Chem. Inf. Model.",
+    "npj Computational Materials": "npj Comput. Mater.",
+    "Communications Materials": "Commun. Mater.",
+    "Digital Discovery": "Digital Discov.",
+    "Chemical Society Reviews": "Chem. Soc. Rev.",
+    "Computational Materials Science": "Comput. Mater. Sci.",
+    "Machine Learning: Science and Technology": "Mach. Learn.: Sci. Technol.",
+}
+
 # The references that are not journal articles.
 MANUAL = {
     "supercon": {
@@ -143,7 +165,9 @@ def bib_entry(key: str, meta: dict) -> str:
     lines = [f"@article{{{key},"]
     lines.append("  author = {" + " and ".join(authors) + "},")
     lines.append(f"  title = {{{clean((meta.get('title') or ['?'])[0])}}},")
-    lines.append(f"  journal = {{{clean((meta.get('container-title') or ['?'])[0])}}},")
+    journal = (meta.get("container-title") or ["?"])[0]
+    journal = JOURNALS.get(journal, journal)
+    lines.append(f"  journal = {{{clean(journal)}}},")
     # apsrev4-2 wants the volume and the issue as numbers, not as
     # braced strings.
     if meta.get("volume"):
