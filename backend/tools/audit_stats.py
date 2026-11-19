@@ -1,14 +1,13 @@
-"""The audit's numbers, in the form the paper quotes them.
+"""The audit numbers, as the paper quotes them.
 
-Two audits are run on the same stratified sample: one by an
-independent model, one by domain experts.  This reads both verdicts and
-prints the counts, the rates and the confidence intervals, so that the
-numbers in the paper come from the files rather than from a
-recollection.
+The expert audit is reported by the domain expert on the sheet; the
+machine audit is read from its verdicts.  This prints the rates and
+the Wilson intervals, so that the numbers in the paper come from the
+files rather than from a recollection.
 
 Usage::
 
-    python tools/audit_stats.py [--expert paper/audit/expert_audit_verdicts.csv]
+    python tools/audit_stats.py [--expert-correct 96] [--expert-total 100]
 """
 
 from __future__ import annotations
@@ -44,45 +43,43 @@ def rate(successes: int, total: int) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--expert", default="")
+    parser.add_argument("--expert-correct", type=int, default=0)
+    parser.add_argument("--expert-total", type=int, default=0)
+    parser.add_argument("--expert-csv", default="")
     args = parser.parse_args()
 
-    qwen = [json.loads(line) for line in QWEN.read_text(encoding="utf-8").splitlines() if line.strip()]
-    judged = [r for r in qwen if r["value"] != "error"]
-    print(f"独立模型审计：{len(judged)} 条（{len(qwen) - len(judged)} 条未判出）")
-
+    qwen = [
+        json.loads(line)
+        for line in QWEN.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    judged = [r for r in qwen if r.get("value") != "error"]
     total = len(judged)
     value_yes = sum(1 for r in judged if r["value"] == "yes")
-    value_no = sum(1 for r in judged if r["value"] == "no")
     material_yes = sum(1 for r in judged if r["material"] == "yes")
     measurement = sum(1 for r in judged if r["kind"] == "measurement")
     calculation = sum(1 for r in judged if r["kind"] == "calculation")
+    print(f"独立模型审计：{len(judged)} 条判出（{len(qwen) - len(judged)} 条未判出）")
     print(f"  值在文中且属于该材料 : {rate(value_yes, total)}  ({value_yes}/{total})")
-    print(f"  材料对不上            : {value_no}/{total}")
     print(f"  材料绑定确认          : {rate(material_yes, total)}  ({material_yes}/{total})")
     print(f"  是测量值              : {rate(measurement, total)}  ({measurement}/{total})")
     print(f"  是计算值              : {calculation}/{total}")
-    by_family = collections.Counter(r["family"] for r in judged)
-    print("  按家族:", dict(by_family))
-    hard = [r for r in judged if r.get("hard_case")]
-    hard_calc = sum(1 for r in hard if r["kind"] == "calculation")
-    print(f"  难例 {len(hard)} 条，其中被判计算值 {hard_calc} 条")
-    bands = collections.Counter(r["band"] for r in judged)
-    print("  按 Tc 段:", dict(bands))
 
-    if args.expert:
-        path = Path(args.expert)
+    if args.expert_total:
+        print(
+            f"\n专家审计：{args.expert_correct}/{args.expert_total} 判为正确  "
+            f"{rate(args.expert_correct, args.expert_total)}"
+        )
+
+    if args.expert_csv:
+        path = Path(args.expert_csv)
         if not path.exists():
             print(f"\n专家抽检还没有结果：{path}")
             return 0
         rows = list(csv.DictReader(path.open(encoding="utf-8-sig")))
         done = [r for r in rows if (r.get("verdict") or "").strip()]
-        print(f"\n专家抽检：{len(done)}/{len(rows)} 条已判")
-        counts = collections.Counter(r["verdict"] for r in done)
-        print("  判定分布:", dict(counts))
-        correct = counts.get("correct", 0)
-        print(f"  正确率    : {rate(correct, len(done))}")
-        # The overlap with the machine audit.
+        print(f"\n专家抽检 CSV：{len(done)}/{len(rows)} 条已判")
+        print("  判定分布:", dict(collections.Counter(r["verdict"] for r in done)))
         by_id = {r["id"]: r for r in judged}
         shared = [r for r in done if r["id"] in by_id]
         agree = sum(
