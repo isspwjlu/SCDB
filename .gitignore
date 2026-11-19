@@ -41,3 +41,8 @@ paper/*.bbl
 paper/*.log
 paper/*.out
 paper/audit/expert_audit_verdicts.csv
+
+# 出图工具的中间产物：矢量图进仓库，位图预览不进
+paper/figures/fig[0-9]*.png
+paper/figures/_preview/
+paper/_v_*.png
