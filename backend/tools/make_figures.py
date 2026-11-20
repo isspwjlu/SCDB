@@ -75,8 +75,8 @@ APS = {
     "axes.linewidth": 0.6,
     "xtick.major.width": 0.6,
     "ytick.major.width": 0.6,
-    "axes.spines.top": False,
-    "axes.spines.right": False,
+    "axes.spines.top": True,
+    "axes.spines.right": True,
     "axes.unicode_minus": False,
     "pdf.fonttype": 42,
     "ps.fonttype": 42,
@@ -139,7 +139,9 @@ def figure_database(out: Path, materials: list[dict]) -> None:
         2, 2, figsize=(FULL_CM / 2.54, 12.0 / 2.54), constrained_layout=True
     )
 
-    # (a) the critical temperatures, split by the extraction's own flag
+    # (a) the critical temperatures, split by the extraction's own flag:
+    # the solid part of each bar is what the source paper reports as an
+    # observation, the hatched part is what it reports as a calculation.
     measured = np.array(
         [m["tc"] for m in materials if m["tc"] is not None and m["experimental"]]
     )
@@ -148,16 +150,36 @@ def figure_database(out: Path, materials: list[dict]) -> None:
     )
     ax = axes[0][0]
     bins = np.linspace(0, 300, 61)
+    counts_measured, _ = np.histogram(measured, bins=bins)
     ax.hist(measured, bins=bins, color=BLUE, edgecolor="none",
             label="reported as measured")
-    ax.hist(predicted, bins=bins, color=ORANGE, edgecolor="none",
+    ax.hist(predicted, bins=bins, bottom=counts_measured, color="white",
+            edgecolor=ORANGE, hatch="////", linewidth=0.5,
             label="reported as predicted")
     ax.set_yscale("log")
     ax.set_xlabel("$T_c$ (K)")
     ax.set_ylabel("records")
     ax.set_title("(a)  transition temperatures", loc="left")
-    ax.axvline(273.15, color="#333333", lw=0.6, ls=(0, (4, 2)))
-    ax.legend(frameon=False, loc="upper right", fontsize=6, handlelength=1.3)
+    ax.axvline(273.15, color="#444444", lw=0.6, ls=(0, (4, 2)))
+    ax.annotate(
+        "water boils",
+        xy=(269.0, 22.0),
+        fontsize=6,
+        color="#444444",
+        ha="right",
+        va="bottom",
+        bbox={"fc": "white", "ec": "none", "alpha": 0.75, "pad": 1.2},
+    )
+    ax.legend(
+        frameon=True,
+        facecolor="white",
+        edgecolor="none",
+        framealpha=0.85,
+        fontsize=6,
+        loc="upper right",
+        handlelength=1.6,
+        borderpad=0.3,
+    )
 
     # (b) the families: one colour, because the category is on the axis
     ax = axes[0][1]
@@ -418,8 +440,8 @@ def figure_tail(out: Path, materials: list[dict]) -> None:
         width=0.62,
     )
     for i, (y_value, n) in enumerate(zip(fractions, counts)):
-        ax.text(i, y_value + 4.4, f"{y_value:.0f}%", ha="center", fontsize=7)
-        ax.text(i, y_value + 1.2, f"n={n}", ha="center", fontsize=6, color="#555555")
+        ax.text(i, y_value + 5.6, f"{y_value:.0f}%", ha="center", fontsize=7)
+        ax.text(i, y_value + 1.4, f"n={n}", ha="center", fontsize=6, color="#555555")
     ax.set_xlabel("records with $T_c \\geq$ threshold (K)")
     ax.set_ylabel("% not reported as measured")
     ax.set_title("(a)  the flag against the transition temperature", loc="left")
@@ -658,10 +680,11 @@ def figure_relations(out: Path) -> None:
     ax.legend(
         frameon=False,
         fontsize=5.2,
-        loc="lower left",
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.30),
         ncol=3,
         handletextpad=0.2,
-        columnspacing=0.8,
+        columnspacing=1.0,
         borderpad=0.1,
         labelspacing=0.25,
     )
@@ -736,17 +759,17 @@ def figure_relations(out: Path) -> None:
     placed: list[float] = []
     for value, x_value, name, colour in peaks:
         y_value = value
-        while any(abs(y_value - other) < 5.0 for other in placed):
-            y_value -= 5.0
+        while any(abs(y_value - other) < 6.5 for other in placed):
+            y_value -= 6.5
         placed.append(y_value)
         ax.annotate(
             name,
             xy=(x_value, value),
-            xytext=(x_value + 2.5, y_value),
-            fontsize=5.2,
+            xytext=(x_value + 2.0, y_value),
+            fontsize=5.0,
             color=colour,
             va="center",
-            bbox={"fc": "white", "ec": "none", "alpha": 0.75, "pad": 0.6},
+            bbox={"fc": "white", "ec": "none", "alpha": 0.8, "pad": 0.8},
         )
     ax.set_xlabel("pressure (GPa)")
     ax.set_ylabel("$T_c$ (K)")
