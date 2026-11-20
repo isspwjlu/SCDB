@@ -209,8 +209,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.path.exists():
         log.error("CSV not found at %s", args.path)
         log.error(
-            "Tip: run `python backend/scripts/download_supercon.py` first, "
-            "or point --path at seeds/supercon_fixture.csv for the 10-row smoke test."
+            "Tip: run `python backend/scripts/download_supercon.py --out "
+            "seeds/supercon.csv` first; add --fixture there for a 10-row "
+            "synthetic smoke test."
         )
         return 2
 

@@ -31,24 +31,25 @@ SUPERCON_CSV_URL = "https://supercon.nims.go.jp/data/material/2021/supercon.csv"
 
 
 # 10-row fixture used when network is blocked. Values are realistic critical
-# temperatures for well-known superconductors (hand-curated; no fake-looking
-# numbers). Columns mirror the canonical SuperCon CSV header so the loader
-# reads both real and fixture identically.
+# a ten-row smoke test for the loader. The rows are synthetic on purpose:
+# the catalogue itself is not redistributed with the code, so a row here
+# must not be mistaken for one of its measurements. The columns mirror the
+# canonical SuperCon CSV header so the loader reads both identically.
 FIXTURE_CSV_HEADER = (
     "chemical_formula,Tc,Tc_uncertainty,sample,reference\n"
 )
 FIXTURE_ROWS: list[str] = [
     # (formula, Tc_K, sample, reference)
-    "MgB2,39.0,,polycrystalline,NIMS-SuperCon-001\n",
-    "Nb,9.25,,bulk,NIMS-SuperCon-002\n",
-    "Pb,7.20,,bulk,NIMS-SuperCon-003\n",
-    "Hg,4.15,,bulk,NIMS-SuperCon-004\n",
-    "YBa2Cu3O7,92.0,,ceramic,NIMS-SuperCon-005\n",
-    "Bi2Sr2CaCu2O8,85.0,,single crystal,NIMS-SuperCon-006\n",
-    "Tl2Ba2CaCu2O8,108.0,,ceramic,NIMS-SuperCon-007\n",
-    "HgBa2Ca2Cu3O8,134.0,,ceramic,NIMS-SuperCon-008\n",
-    "FeSe,8.0,,single crystal,NIMS-SuperCon-009\n",
-    "SmFeAsO0.85F0.15,55.0,,polycrystalline,NIMS-SuperCon-010\n",
+    "XxA2,12.3,,synthetic,SMOKE-001\n",
+    "XyB2,18.7,,synthetic,SMOKE-002\n",
+    "XzC3,24.1,,synthetic,SMOKE-003\n",
+    "XpD4,31.5,,synthetic,SMOKE-004\n",
+    "XqE5,44.2,,synthetic,SMOKE-005\n",
+    "XrF6,52.9,,synthetic,SMOKE-006\n",
+    "XsG7,63.4,,synthetic,SMOKE-007\n",
+    "XtH8,71.8,,synthetic,SMOKE-008\n",
+    "XuI9,88.6,,synthetic,SMOKE-009\n",
+    "XvJ10,97.2,,synthetic,SMOKE-010\n",
 ]
 FIXTURE_CSV = FIXTURE_CSV_HEADER + "".join(FIXTURE_ROWS)
 

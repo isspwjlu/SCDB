@@ -90,19 +90,35 @@ paper that failed is a paper that was not extracted.
 
 ```
 backend/      the package: ingest/, db/, core/, plus the tools and tests
-seeds/        the SuperCon fixture the tests run against
-SuperCon数据/  the NIMS SuperCon catalogue (CSV + the nickelate workbook)
 docs/         architecture, development and deployment notes
 scripts/      the small operational helpers
 ```
 
+The datasets are not in this repository.  The SuperCon catalogue is
+distributed by NIMS for research use, and the corpus records are the
+database itself; both are obtained with the scripts below rather than
+committed here.
+
 ## Data
 
 The seed catalogue is the **NIMS SuperCon database**, which the National
-Institute for Materials Science publishes for research use; the nickelate
-pressure table comes from the workbook in `SuperCon数据/`. Everything the
-extraction adds — the papers, the markdown, the extracted records — is derived
-from the literature and carries its own DOI.
+Institute for Materials Science publishes for research use.  Fetch it with
+
+```bash
+python backend/scripts/download_supercon.py --out seeds/supercon.csv
+```
+
+and point the importer at the CSV:
+
+```bash
+python -m superconductor_db.ingest.supercon_seed --path seeds/supercon.csv
+```
+
+The nickelate pressure table is a workbook that is not redistributed here
+either; it goes in the directory `SUPERCON_CSV_DIR` names, and the importer
+takes it from there.  Everything the extraction adds — the papers, the
+markdown, the extracted records — is derived from the literature and
+carries its own DOI.
 
 ## Licence
 
