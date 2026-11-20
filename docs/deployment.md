@@ -1,5 +1,8 @@
 # Deployment
 
+> **Scope.** This repository holds the extraction pipeline. The web
+> interface and its HTTP API are not part of it.
+
 This guide covers the local Docker Compose stack (the supported deployment target) and the
 production wiring choices you'll need for a real environment.
 

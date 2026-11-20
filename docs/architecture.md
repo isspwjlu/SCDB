@@ -1,5 +1,8 @@
 # Architecture
 
+> **Scope.** This repository holds the extraction pipeline. The web
+> interface and its HTTP API are not part of it.
+
 ## Overview
 
 Standalone research-grade superconductor database. Monorepo with a FastAPI backend, a React SPA
@@ -241,7 +244,7 @@ make frontend-test                                # vitest with coverage gate
 make contract-test                                # CI gate: committed JSON Schemas match Pydantic output
 ```
 
-See [deployment.md](deployment.md) for production wiring, [api.md](api.md) for every endpoint, and
+See [deployment.md](deployment.md) for production wiring, and
 [development.md](development.md) for the TDD workflow.
 
 ## Roadmap

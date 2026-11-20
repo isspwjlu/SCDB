@@ -1,5 +1,8 @@
 # Development
 
+> **Scope.** This repository holds the extraction pipeline. The web
+> interface and its HTTP API are not part of it.
+
 How to work on the superconductor database day-to-day: TDD workflow, commit conventions,
 PR review process, and troubleshooting the common gotchas.
 
