@@ -1,4 +1,4 @@
-# SCDB LLM — the superconducting-material extraction pipeline
+# SCDB — Superconducting Database: superconducting material extraction pipeline
 
 The LLM-assisted pipeline that turns a corpus of superconducting papers into a
 structured, source-traceable database of materials and their measured
