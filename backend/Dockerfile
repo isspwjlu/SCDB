@@ -22,4 +22,6 @@ ENV PYTHONPATH=/app/src
 
 FROM base AS dev
 
-CMD ["uvicorn", "superconductor_db.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# The container runs the extraction worker; the HTTP API is not part of
+# this repository.
+CMD ["python", "-m", "superconductor_db.ingest.worker"]

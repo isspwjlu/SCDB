@@ -34,25 +34,8 @@ services:
       timeout: 3s
       retries: 10
 
-  backend:
-    build:
-      context: ./backend
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      POSTGRES_HOST: postgres
-      MINIO_HOST: minio
-    depends_on:
-      postgres:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    volumes:
-      - cache:/data/cache
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
-    command: uvicorn superconductor_db.main:app --host 0.0.0.0 --port 8000
-
+  # The extraction worker: it reads the parsed corpus, asks the model for
+  # the measurements, and writes the records that survive the evidence gate.
   worker:
     build:
       context: ./backend
@@ -75,15 +58,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-
-  frontend:
-    build:
-      context: ./frontend
-    restart: unless-stopped
-    ports:
-      - "${FRONTEND_PORT:-5173}:5173"
-    depends_on:
-      - backend
 
 volumes:
   pgdata:

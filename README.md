@@ -1,75 +1,111 @@
-# Superconductor Database
+# SCDB LLM — the superconducting-material extraction pipeline
 
-A research-grade superconductor database. Built standalone (no reuse from `magnetism_database`).
-Backs a FastAPI service + React SPA, with Postgres, MinIO, and an ingestion worker, all running
-under Docker Compose.
+The LLM-assisted pipeline that turns a corpus of superconducting papers into a
+structured, source-traceable database of materials and their measured
+properties.
 
-The seed dataset is the SuperCon catalog (NIMS). Papers are added incrementally via an
-LLM-assisted ingestion pipeline.
+Every record it writes carries the sentence it came from, the DOI of the paper
+it came from, and a gate that refuses the record when the evidence does not
+support it. The point of the pipeline is not the numbers — those are in the
+papers — it is that each number can be walked back to the page it was read
+from.
 
-## Status
+> The web interface built on top of this pipeline is **not** part of this
+> repository. What is here is the extraction itself: the parsers, the
+> prompts, the validators, the database model, and the tools that drive them.
 
-| Milestone | Scope                                                         | Status |
-|-----------|---------------------------------------------------------------|--------|
-| M1        | Monorepo skeleton + Docker stack                              | done   |
-| M2        | SuperCon seed ingestion                                       | done   |
-| M3        | Auth (JWT cookie) + RBAC (reader/contributor/reviewer/admin)  | done   |
-| M4        | Material REST API + search                                    | done   |
-| M5        | Paper ingestion + LLM extraction                              | done   |
-| M6        | Audit log + reviewer queue                                    | done   |
-| M7        | Observability + stats dashboard                               | done   |
-| M8        | Admin UI (users / ingest / audit)                             | done   |
-| M9        | Submission UI (submit / mine / review)                        | done   |
-| M10       | Polish + Playwright E2E + contract test + docs                | done   |
+## How it works
 
-## Quickstart
-
-```bash
-cp .env.example .env       # then edit secrets/ports as needed
-make up                    # build + start the full stack
-make test                  # run backend + frontend + contract suites
+```
+PDF ──► docling ──► markdown ──► LLM extraction ──► evidence gate ──► SQLite/Postgres
+              │                        │                    │
+        cache/markdown/         one call per            a record whose
+        cache/pdfs/             dimension               evidence does not
+                               (composition, Tc,        not support it is
+                               Hc2, gap, pressure,      not written at all
+                               synthesis)
 ```
 
-That's three commands. After the stack is up:
+1. **Parsing.** `docling` turns each PDF into markdown, cached by the content
+   hash of the file. A paper is parsed once, whatever happens to it after.
+2. **Extraction.** One LLM call per dimension — composition, critical
+   temperature, upper critical field, energy gap, pressure, synthesis — so a
+   bad answer to one question cannot spoil the others.
+3. **The gate.** The extraction has to quote the passage that supports each
+   value, and the passage has to contain it. A value the text does not
+   support is dropped rather than stored, which is why the corpus is smaller
+   than the number of papers but every row in it is worth having.
 
-- Frontend:    <http://localhost:5173>
-- Backend API: <http://localhost:8000>  (`GET /health` returns `{"status":"ok",...}`)
-- MinIO:       <http://localhost:9001>  (console, `scdb` / `scdb_dev_pw`)
-- Postgres:    `localhost:5432`
+## What comes out
+
+| Table       | Holds                                                           |
+|-------------|-----------------------------------------------------------------|
+| `papers`    | one row per ingested paper: DOI, title, where its text is cached |
+| `materials` | one row per (compound, measurement): composition, Tc, Hc2, gap, pressure, family, mechanism, and the evidence quote |
+| `users`     | the accounts of the deployment the pipeline writes into         |
+
+A compound measured at one temperature is one measurement, however many papers
+report it. `backend/scripts/cleanup_duplicates.py` merges the rows that
+disagree about the *sample* into `meta['variants']` and keeps every source
+DOI in `meta['source_dois']`, so the merge loses nothing.
+
+## Running it
+
+The pipeline needs a database and an object store; Docker Compose brings both
+up, and the worker runs inside them.
+
+```bash
+cp .env.example .env       # then edit the secrets
+make up                    # postgres + minio + the worker
+make migrate               # the schema
+make seed                  # the SuperCon catalogue
+make backend-test          # the test suite
+```
+
+The extraction itself is driven by the scripts in `backend/tools/`:
+
+| Script                                 | What it does                                        |
+|----------------------------------------|-----------------------------------------------------|
+| `download_papers.py`                   | fetch the papers by DOI into the PDF cache          |
+| `docling_worker.py`                    | parse the PDFs into markdown                        |
+| `run_extraction.py`                    | run the LLM extraction over the parsed corpus       |
+| `cleanup_duplicates.py`                | merge the rows that describe the same measurement   |
+| `audit_stats.py`, `audit_ledger.py`    | the evidence-gate statistics                        |
+| `sync_from_master.py`                  | pull the database back down and re-run the dedupe   |
+
+Every one of them takes `--help`.
+
+## The LLM
+
+Any OpenAI-compatible endpoint works. The default configuration points at a
+local model; the pipeline that produced the published corpus ran against
+`MiniMax-M3.1-Flash`, which always reasons, so the extraction runs with
+`LLM_REASONING_EFFORT=low` and a token budget that covers the thinking.
+
+`LLM_MAX_CONCURRENCY` defaults to 1. The calls are serial on purpose: a
+concurrent burst is what makes a rate-limited endpoint answer with 429, and a
+paper that failed is a paper that was not extracted.
 
 ## Layout
 
 ```
-backend/    FastAPI + SQLAlchemy 2 + Alembic + Pydantic v2
-frontend/   Vite + React 18 + TS strict + shadcn/ui + TanStack Query
-seeds/      External datasets (SuperCon CSV lives here)
-contracts/  Cross-service API contracts / schemas (JSON Schema)
-docs/       Design + architecture notes
+backend/      the package: ingest/, db/, core/, plus the tools and tests
+seeds/        the SuperCon fixture the tests run against
+SuperCon数据/  the NIMS SuperCon catalogue (CSV + the nickelate workbook)
+docs/         architecture, development and deployment notes
+scripts/      the small operational helpers
 ```
 
-## Documentation
+## Data
 
-- [docs/architecture.md](docs/architecture.md) — system diagram, process topology,
-  data flow, 8-table ERD, services summary.
-- [docs/api.md](docs/api.md) — every endpoint with example curl + response shape.
-- [docs/deployment.md](docs/deployment.md) — local stack, env-var reference, scale
-  considerations, production wiring.
-- [docs/development.md](docs/development.md) — TDD workflow, commit conventions, PR
-  review process, troubleshooting.
-- [docs/superpowers/plans/2026-09-30-superconductor-database-plan.md](docs/superpowers/plans/2026-09-30-superconductor-database-plan.md)
-  — full implementation plan and milestone history.
+The seed catalogue is the **NIMS SuperCon database**, which the National
+Institute for Materials Science publishes for research use; the nickelate
+pressure table comes from the workbook in `SuperCon数据/`. Everything the
+extraction adds — the papers, the markdown, the extracted records — is derived
+from the literature and carries its own DOI.
 
-## Verification cheat-sheet
-
-```bash
-make backend-test       # pytest with 80% coverage gate
-make frontend-test      # vitest with 70% coverage gate
-make contract-test      # CI gate: committed JSON Schemas match Pydantic output
-npm run e2e             # Playwright critical flows (run inside frontend/)
-```
-
-## License
+## Licence
 
 Copyright 2026 Institute of Solid State Physics, Chinese Academy of Sciences.
 
-Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE).
