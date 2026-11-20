@@ -151,23 +151,31 @@ def figure_database(out: Path, materials: list[dict]) -> None:
     ax = axes[0][0]
     bins = np.linspace(0, 300, 61)
     ax.hist(measured, bins=bins, color=BLUE, edgecolor="none",
-            label="reported as measured", zorder=2)
+            label="experimentally measured", zorder=2)
     ax.hist(predicted, bins=bins, color="#CC79A7", edgecolor="none", alpha=0.55,
-            label="reported as predicted", zorder=3)
+            label="theoretically predicted", zorder=3)
     ax.set_yscale("log")
     ax.set_xlabel("$T_c$ (K)")
     ax.set_ylabel("records")
     ax.set_title("(a)  transition temperatures", loc="left")
-    ax.axvline(273.15, color="#444444", lw=0.6, ls=(0, (4, 2)))
-    ax.annotate(
-        "water boils",
-        xy=(269.0, 22.0),
-        fontsize=6,
-        color="#444444",
-        ha="right",
-        va="bottom",
-        bbox={"fc": "white", "ec": "none", "alpha": 0.75, "pad": 1.2},
-    )
+    # The three temperatures the laboratory works at.
+    for temperature, label, align in (
+        (4.2, "4.2 K", "left"),
+        (77.0, "77 K", "right"),
+        (300.0, "300 K", "right"),
+    ):
+        ax.axvline(temperature, color="#777777", lw=0.6, ls=(0, (4, 2)))
+        ax.annotate(
+            label,
+            xy=(temperature, 1.25),
+            xytext=(temperature + (1.5 if align == "left" else -1.5), 1.25),
+            fontsize=6,
+            color="#444444",
+            ha=align,
+            va="bottom",
+            bbox={"fc": "white", "ec": "none", "alpha": 0.8, "pad": 1.0},
+        )
+    ax.set_xlim(0, 305)
     ax.legend(
         frameon=True,
         facecolor="white",
