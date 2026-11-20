@@ -220,9 +220,29 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--from-report",
+        default="",
+        help="apply the verdicts of an audit file instead of asking the "
+        "model again; the file is the one --report wrote",
+    )
     args = parser.parse_args()
 
     db_path = Path(args.db)
+
+    if args.from_report:
+        source = Path(args.from_report)
+        verdicts = [
+            json.loads(line)
+            for line in source.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        usage = {}
+        print(f"从 {source.name} 读入 {len(verdicts)} 条判定")
+        if args.apply:
+            apply(db_path, verdicts)
+        return 0
+
     records = load_records(db_path)
     if args.limit:
         records = records[: args.limit]

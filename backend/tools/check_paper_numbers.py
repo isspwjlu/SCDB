@@ -168,7 +168,8 @@ def main() -> int:
     check("摘要说 one in seven", "One in seven of the values the audit" in flat)
     check("没有 one in six", "one in six" not in flat.lower())
     check("没有 one in eight", "one in eight" not in flat.lower())
-    check("未分类家族用全称", "unclassified conventional superconductors" in flat)
+    check("未分类家族的叫法", "unclassified conventional superconductors" not in flat
+          and "are still unclassified" in flat)
     check("95.2\\% 没有与材料绑定混为一谈",
           "the value was stated in the text and belonged to the material in 139" not in flat)
 
