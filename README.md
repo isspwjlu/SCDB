@@ -67,3 +67,9 @@ make frontend-test      # vitest with 70% coverage gate
 make contract-test      # CI gate: committed JSON Schemas match Pydantic output
 npm run e2e             # Playwright critical flows (run inside frontend/)
 ```
+
+## License
+
+Copyright 2026 Institute of Solid State Physics, Chinese Academy of Sciences.
+
+Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE).
