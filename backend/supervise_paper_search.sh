@@ -13,11 +13,12 @@
 
 set -u
 
-WORKDIR="F:/vs_projects/superconductor_database/backend"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKDIR="$ROOT/backend"
 LOG="/tmp/scdb_paper_search_loop.log"
 STATE="/tmp/scdb_paper_search_offset"
 PY="$WORKDIR/.venv/Scripts/python.exe"
-DB_URL="sqlite:///F:/vs_projects/superconductor_database/backend/_dev.db"
+DB_URL="sqlite:///$WORKDIR/_dev.db"
 
 cd "$WORKDIR" || exit 1
 

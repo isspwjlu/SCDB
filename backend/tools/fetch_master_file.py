@@ -7,10 +7,11 @@ Usage::
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, r"C:\Users\42033\.claude")
+sys.path.insert(0, str(Path.home() / ".claude"))
 from ssh_login import connect  # noqa: E402
 
 

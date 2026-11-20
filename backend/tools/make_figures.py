@@ -136,7 +136,7 @@ def figure_database(out: Path, materials: list[dict]) -> None:
     kinds of statement.
     """
     fig, axes = plt.subplots(
-        2, 2, figsize=(FULL_CM / 2.54, 12.0 / 2.54), constrained_layout=True
+        2, 2, figsize=(FULL_CM / 2.54, 11.5 / 2.54), constrained_layout=True
     )
 
     # (a) the critical temperatures, split by the extraction's own flag.
@@ -236,7 +236,7 @@ def figure_database(out: Path, materials: list[dict]) -> None:
         fig,
         basename=str(out / "fig2_database"),
         formats=["pdf", "png"],
-        size_inches=(FULL_CM / 2.54, 12.0 / 2.54),
+        size_inches=(FULL_CM / 2.54, 11.5 / 2.54),
         tight=False,
         grayscale_preview=True,
     )
@@ -648,7 +648,7 @@ def figure_relations(out: Path) -> None:
     pressure = json.loads((site / "pressure-series.json").read_text(encoding="utf-8"))
 
     fig, axes = plt.subplots(
-        2, 2, figsize=(FULL_CM / 2.54, 11.4 / 2.54), constrained_layout=True
+        2, 2, figsize=(FULL_CM / 2.54, 10.8 / 2.54), constrained_layout=True
     )
 
     # (a) the transition temperature against the upper critical field
@@ -786,7 +786,7 @@ def figure_relations(out: Path) -> None:
         fig,
         basename=str(out / "fig6_relations"),
         formats=["pdf", "png"],
-        size_inches=(FULL_CM / 2.54, 11.4 / 2.54),
+        size_inches=(FULL_CM / 2.54, 10.8 / 2.54),
         tight=False,
         grayscale_preview=True,
     )

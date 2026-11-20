@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
-ENDPOINT = "http://llm-host.invalid:8004/v1/chat/completions"
+ENDPOINT = "http://llm-host.example.com:8004/v1/chat/completions"
 MODEL = "qwen3.8-27b"
 
 PROMPT = """You are checking one record from a superconducting-materials database.

@@ -78,7 +78,7 @@ its default, and what it controls.
 |----------------------|-------------------------------|------------------------------------------------------|
 | `PDF_CACHE_DIR`      | `/data/cache/pdfs`            | Local cache for downloaded PDFs (worker host).       |
 | `MARKDOWN_CACHE_DIR` | `/data/cache/markdown`        | Local cache for extracted markdown (worker host).    |
-| `SCANSCI_PDF_BIN`    | `C:/Users/42033/.local/bin/scansci-pdf.exe` | Path to the `scansci-pdf` CLI binary. Host-specific. |
+| `SCANSCI_PDF_BIN`    | `scansci-pdf` | Path to the `scansci-pdf` CLI binary. Host-specific. |
 
 ### Network ports
 

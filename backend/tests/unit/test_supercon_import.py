@@ -229,7 +229,7 @@ def test_the_build_can_be_run_again(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_the_real_dataset_imports(tmp_path: Path) -> None:
     """The dataset as it ships: five files, and every row lands."""
-    source = Path(r"F:\vs_projects\superconductor_database\SuperCon数据")
+    source = Path(__file__).resolve().parents[3] / "SuperCon数据"
     if not source.exists():
         pytest.skip("the SuperCon data directory is not on this machine")
 
