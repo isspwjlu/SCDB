@@ -84,7 +84,7 @@ APS = {
 }
 
 ELEMENT = re.compile(r"[A-Z][a-z]*")
-UNCLASSIFIED = "unclassified conventional\nsuperconductor"
+UNCLASSIFIED = "unclassified\nsuperconductor"
 
 
 def apply_style() -> None:
@@ -139,9 +139,9 @@ def figure_database(out: Path, materials: list[dict]) -> None:
         2, 2, figsize=(FULL_CM / 2.54, 12.0 / 2.54), constrained_layout=True
     )
 
-    # (a) the critical temperatures, split by the extraction's own flag:
-    # the solid part of each bar is what the source paper reports as an
-    # observation, the hatched part is what it reports as a calculation.
+    # (a) the critical temperatures, split by the extraction's own flag.
+    # The two distributions are drawn on top of one another, the second
+    # one translucent, so that neither hides the other.
     measured = np.array(
         [m["tc"] for m in materials if m["tc"] is not None and m["experimental"]]
     )
@@ -150,12 +150,10 @@ def figure_database(out: Path, materials: list[dict]) -> None:
     )
     ax = axes[0][0]
     bins = np.linspace(0, 300, 61)
-    counts_measured, _ = np.histogram(measured, bins=bins)
     ax.hist(measured, bins=bins, color=BLUE, edgecolor="none",
-            label="reported as measured")
-    ax.hist(predicted, bins=bins, bottom=counts_measured, color="white",
-            edgecolor=ORANGE, hatch="////", linewidth=0.5,
-            label="reported as predicted")
+            label="reported as measured", zorder=2)
+    ax.hist(predicted, bins=bins, color="#CC79A7", edgecolor="none", alpha=0.55,
+            label="reported as predicted", zorder=3)
     ax.set_yscale("log")
     ax.set_xlabel("$T_c$ (K)")
     ax.set_ylabel("records")
@@ -669,7 +667,7 @@ def figure_relations(out: Path) -> None:
         color="#9E9E9E",
         edgecolor="none",
         alpha=0.6,
-        label="unclassified conventional",
+        label="unclassified superconductor",
         zorder=3,
     )
     ax.set_xscale("log")
