@@ -1,4 +1,4 @@
-"""Common Pydantic primitives shared by the material / submission schemas."""
+"""Common Pydantic primitives shared by the material schemas."""
 
 from __future__ import annotations
 

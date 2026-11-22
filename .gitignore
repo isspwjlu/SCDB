@@ -12,7 +12,7 @@ htmlcov/
 .coverage
 *.db
 *.sqlite
-# The database's sidecars and the snapshots the sync script leaves behind
+# The database's sidecars
 *.db-*
 *.db.*
 .DS_Store
@@ -30,19 +30,3 @@ backend/src/*.egg-info/
 
 # superpowers plan workspace (ephemeral)
 .superpowers/
-
-# the vite log lives here
-frontend/data/cache/
-
-# The paper's LaTeX build artefacts
-paper/*.aux
-paper/*.blg
-paper/*.bbl
-paper/*.log
-paper/*.out
-paper/audit/expert_audit_verdicts.csv
-
-# 出图工具的中间产物：矢量图进仓库，位图预览不进
-paper/figures/fig[0-9]*.png
-paper/figures/_preview/
-paper/_v_*.png

@@ -1,15 +1,14 @@
-"""Database engine, session factory, and FastAPI session dependency.
+"""Database engine, session factory, and session helper.
 
 Spec §10 uses Postgres + SQLAlchemy 2.0 typed mappers. This module exposes:
 
 - ``get_engine(dsn)`` -- synchronous engine (used by Alembic and the seed loader).
 - ``get_session_factory(engine)`` -- a configured ``sessionmaker``.
-- ``get_db()`` -- FastAPI dependency yielding a request-scoped ``Session`` that
-  commits on success and rolls back on exception.
+- ``get_db()`` -- a generator yielding a ``Session`` that commits on success
+  and rolls back on exception.
 
-Async engine wiring lives in ``get_async_engine`` for the worker / future
-async routes; v1 routes are sync because FastAPI's thread pool handles them
-fine and Alembic is sync-only.
+Async engine wiring lives in ``get_async_engine`` for the worker; the
+extraction loops are sync because Alembic is sync-only.
 """
 
 from __future__ import annotations
@@ -54,16 +53,13 @@ def get_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 
 def get_db() -> Generator[Session, None, None]:
-    """FastAPI dependency yielding a request-scoped ``Session``.
+    """Yield a request-scoped ``Session`` and close it afterwards.
 
-    Usage in a route::
-
-        @app.get("/things")
-        def list_things(db: Session = Depends(get_db)) -> list[Thing]:
-            return db.scalars(select(Thing)).all()
-
-    On exception we rollback; we never leave a session in an unusable state for
-    the next caller (pool returns connection close).
+    The extraction loops open their own sessions; this is the generator
+    for the callers that want a session with a lifetime they do not
+    manage themselves.  On exception we roll back; we never leave a
+    session in an unusable state for the next caller (the pool returns
+    the connection on close).
     """
     from superconductor_db.core.config import get_settings
 

@@ -3,49 +3,45 @@
 > **Scope.** This repository holds the extraction pipeline. The web
 > interface and its HTTP API are not part of it.
 
-How to work on the superconductor database day-to-day: TDD workflow, commit conventions,
-PR review process, and troubleshooting the common gotchas.
+How to work on the pipeline day-to-day: the setup, the test loop, the
+commit conventions, and the traps that cost the most time.
 
 ## Setup
 
 ```bash
-# Clone
 git clone <repo-url>
 cd superconductor_database
 
-# Configure
-cp .env.example .env       # edit secrets / ports
+cp .env.example .env       # the model endpoint, the cache directories
 
-# Boot the stack
-make up
-make migrate               # one-time
-make seed                  # optional, populates SuperCon materials
-
-# Verify
-curl -fsS http://localhost:8000/health   # {"status":"ok","db":true,"minio":true}
+make up                    # postgres + the worker
+make migrate               # the schema
+make seed                  # optional, populates the SuperCon materials
 ```
 
-For convenience, the backend source is bind-mounted in dev mode; FastAPI auto-reloads on
-file save. The frontend Vite server HMRs on save. Save any file, see the change in
-your browser within a second.
+The backend source is bind-mounted in dev mode, so a saved file is the
+file that runs.
 
-### docling virtualenv
+### The docling virtualenv
 
-PDF parsing runs on [docling](https://github.com/docling-project/docling), which
-lives in **its own virtualenv** at `backend/.venv-docling` -- not in the application
-venv. The application venv's base interpreter is an Anaconda Python, and the
-torch wheels docling needs refuse to load there (`Error loading c10.dll`).
+PDF parsing runs on [docling](https://github.com/docling-project/docling),
+which lives in **its own virtualenv** at `backend/.venv-docling` -- not
+in the application venv. The application venv's base interpreter is an
+Anaconda Python, and the torch wheels docling needs refuse to load
+there (`Error loading c10.dll`).
 
 ```bash
 uv venv --python 3.12 backend/.venv-docling
 uv pip install --python backend/.venv-docling/Scripts/python.exe "docling-slim[standard]>=2.142,<3"
 ```
 
-`backend/tools/docling_worker.py` is the bridge: it reads `{"pdf": ..., "out": ...}`
-requests as JSON lines on stdin and writes one result line per request, so a batch
-of papers pays the model-loading cost once. `ingest/docling_parser.py` drives it,
-caches the markdown by the PDF's SHA-256, and strips the bibliography (reference
-titles are a rich source of numbers the extractor must not borrow).
+`backend/tools/docling_worker.py` is the bridge: it reads
+`{"pdf": ..., "out": ...}` requests as JSON lines on stdin and writes
+one result line per request, so a batch of papers pays the
+model-loading cost once. `ingest/docling_parser.py` drives it, caches
+the markdown by the PDF's SHA-256, and strips the bibliography
+(reference titles are a rich source of numbers the extractor must not
+borrow).
 
 Convert everything already in the PDF cache:
 
@@ -53,55 +49,35 @@ Convert everything already in the PDF cache:
 cd backend && .venv/Scripts/python.exe -m superconductor_db.ingest.docling_parser
 ```
 
-The docling models are fetched from Hugging Face; `HF_ENDPOINT` defaults to a
-mirror, override it if the network allows the real host.
+The docling models are fetched from Hugging Face; `HF_ENDPOINT`
+defaults to a mirror, override it if the network allows the real host.
 
-## TDD workflow
+## Test loop
 
-The project follows red → green → refactor for every behavior change.
-
-### Backend (Python + pytest)
-
-1. Write a failing test in `backend/tests/`. Use `pytest` + `httpx.AsyncClient` against
-   the FastAPI app + a transactional test DB (see `backend/tests/conftest.py`).
-2. Run it:
-
-   ```bash
-   docker compose exec backend pytest tests/<file>::<test> -x
-   ```
-
-   Confirm it fails for the right reason (not an import error).
-3. Write the minimum code in `backend/src/superconductor_db/...` to make the test pass.
-4. Re-run; iterate.
-5. Refactor. Coverage gate is 80% (see `pyproject.toml`); if you drop below, the CI fails.
-6. Add an integration test when a behavior crosses two modules.
-
-### Frontend (TypeScript + Vitest)
-
-1. Write a failing component test in `frontend/tests/unit/`. Use `@testing-library/react`
-   + jsdom + the setup file `frontend/tests/setup.ts`.
-2. Run it:
-
-   ```bash
-   docker compose exec frontend npm test -- <file>
-   ```
-
-3. Implement in `frontend/src/...`. Re-run until green.
-4. Refactor; the coverage gate is 70%.
-5. Add an E2E test in `frontend/tests/e2e/` when the flow crosses multiple routes
-   (e.g. register → login → see nav).
-
-### Contract tests
-
-`contracts/diff.py` is the gate. Whenever you change a Pydantic schema, regenerate:
+The project follows red -> green -> refactor for every behaviour
+change.
 
 ```bash
-make contract-gen           # regenerates contracts/<Name>.schema.json
-git add contracts/
-git commit -m "chore(contracts): regenerate after <schema> change"
+cd backend
+python -m pytest tests/<file>::<test> -x
 ```
 
-CI will block PRs that change a model without committing the regenerated schema.
+or, in the container:
+
+```bash
+docker compose exec worker pytest tests/<file>::<test> -x
+```
+
+1. Write the failing test in `backend/tests/`.
+2. Run it and confirm it fails for the right reason -- an import error
+   is not a failing test.
+3. Write the minimum code in `backend/src/superconductor_db/...`.
+4. Re-run until green, then refactor.
+5. Add an integration test when a behaviour crosses two modules.
+
+The coverage gate is 80% (see `pyproject.toml`); the CI fails below it.
+A `# pragma: no cover` is allowed with a one-line justification on the
+line you skip, and never as a blanket over a module.
 
 ## Commit conventions
 
@@ -126,121 +102,101 @@ Conventional Commits. Format:
 | `perf`     | Performance improvement.                                         |
 | `ci`       | CI workflow changes only.                                        |
 
-Common scopes: `backend`, `frontend`, `worker`, `ingest`, `api`, `auth`,
-`submissions`, `admin`, `e2e`, `contracts`, `docs`.
-
-Examples:
-
-```
-feat(api): paginated materials list with Tc range filter
-fix(auth): open-redirect on login redirect-from validation
-refactor(submissions): extract PDF upload to minio_client.upload_submission_pdf
-test(backend): cover submission approve creating materials rows
-chore(contracts): regenerate after UserRole extraction
-ci: contract test workflow
-docs: architecture, api, deployment, development guides
-```
+Common scopes: `backend`, `ingest`, `gates`, `db`, `tools`, `docs`.
 
 ### Rules
 
-- One logical change per commit. If your commit message has "and" in it, split it.
+- One logical change per commit. If your commit message has "and" in
+  it, split it.
 - Commit messages use the imperative mood ("add", not "added").
 - Reference the plan / issue when relevant: `Refs: Phase J Task 36.`
 
 ## PR review process
 
-1. **Open a PR** against `main`. CI runs:
-   - `make contract-test` — committed schemas match Pydantic models.
-   - `make backend-test` — pytest with 80% coverage gate.
-   - `make frontend-test` — vitest with 70% coverage gate.
-   - On `main` pushes, Playwright E2E also runs (when secrets are configured).
-2. **Self-review**: re-read your diff as if you were the reviewer. Remove debug prints,
-   fix typos, simplify before requesting review.
-3. **One reviewer required** for `feat` and `fix` PRs; `chore` and `docs` can merge with
-   just CI green.
-4. **Reviewer checklist** (see `~/.claude/rules/common/code-review.md` for the full one):
+1. **Open a PR** against `main`. CI runs the backend test suite with
+   the coverage gate.
+2. **Self-review**: re-read your diff as if you were the reviewer.
+   Remove debug prints, fix typos, simplify before requesting review.
+3. **One reviewer required** for `feat` and `fix` PRs; `chore` and
+   `docs` can merge with just CI green.
+4. **Reviewer checklist**:
    - [ ] Tests exist for the change.
    - [ ] No hardcoded secrets.
    - [ ] No mutation of ORM objects outside the session.
    - [ ] Errors handled explicitly (no bare `except Exception: pass`).
-   - [ ] No `console.log` / `print()` left in production code.
+   - [ ] No `print()` left in production code.
    - [ ] Coverage didn't drop.
-5. **Address feedback** in new commits (not force-pushes) until approval — this keeps
-   review history intact. Squash on merge.
-6. **Squash-merge** with the PR title as the commit message (Conventional Commits
-   format).
+5. **Address feedback** in new commits (not force-pushes) until
+   approval. Squash on merge.
 
 ## Branching
 
 - Default branch: `main`. Always deployable; never commit broken code.
-- Feature branches: `feat/<short-slug>` or `fix/<short-slug>`. Branch from latest `main`.
-- Hotfix branches: `hotfix/<short-slug>` from `main`. Merge via PR + cherry-pick if a
-  release branch exists.
+- Feature branches: `feat/<short-slug>` or `fix/<short-slug>`. Branch
+  from the latest `main`.
 
 ## Troubleshooting
 
-### `docker compose up` fails with port already in use
+### `docker compose up` fails with the port already in use
 
-Something on `:5173`, `:8000`, `:5432`, `:9000`, or `:9001` is already listening. On
-Windows:
+Something on `:5432` is already listening. On Windows:
 
 ```bash
 netstat -ano | findstr :5432          # find the PID
 taskkill /F /PID <pid>                # kill it
 ```
 
-Or change the host-side port via `.env` (`POSTGRES_PORT=55432`, etc.).
+Or change the host-side port via `.env` (`POSTGRES_PORT=55432`).
 
-### Backend can't reach the database
+### The worker can't reach the database
 
-`make logs` will show `psycopg2.OperationalError: ... connection refused`. Either
-postgres isn't healthy yet (wait 10s and retry) or `POSTGRES_HOST` is wrong. Inside the
-Compose network the host is `postgres`, not `localhost`.
+`make logs` will show a connection error. Either postgres isn't
+healthy yet (wait 10s and retry) or `POSTGRES_HOST` is wrong. Inside
+the Compose network the host is `postgres`, not `localhost`.
 
-### Login returns 401 even with correct creds
+### The model answers 429
 
-Likely cookie domain mismatch. The dev cookie has `SameSite=Lax` and no `Domain`
-attribute, so it stays on `localhost:8000`. Make sure `curl` persists cookies with
-`-c cookies.txt -b cookies.txt` and the SPA uses the same origin.
+The LLM calls are serial on purpose, and `LLM_MAX_CONCURRENCY`
+defaults to 1. A parallel burst is what makes a rate-limited endpoint
+answer 429, and a paper that failed is a paper that was not extracted.
+If you raise the concurrency, lower `LLM_REASONING_EFFORT` first.
 
-### Frontend shows "Network Error" on every API call
+### The model answers with empty content
 
-Check that Vite's `/api` proxy is configured. Default target is `http://localhost:8000`
-in `frontend/vite.config.ts`. If you changed `BACKEND_PORT`, set `VITE_API_PROXY` in
-`.env` and restart the frontend container.
+MiniMax-M3.1-Flash always reasons, and it thinks for 13-20 k tokens
+before it writes the records of a long paper. `LLM_MAX_TOKENS` has to
+cover the thinking as well as the answer, or the answer comes back
+empty. `LLM_REASONING_EFFORT=low` caps the thinking and cuts the cost
+by about a third.
 
-### Coverage dropped below gate
+### The extracted values are nonsense
+
+Check the gate that refused them. The gates are the point of the
+pipeline: a value that cannot be traced to a sentence is not stored,
+whatever the model says about it. `ingest/extractor.py` holds them.
+
+### The extraction reads numbers from the bibliography
+
+`ingest/docling_parser.py` strips the references; check that the
+markdown in `MARKDOWN_CACHE_DIR` was produced with that stripping, and
+re-convert the paper if it was not.
+
+### Coverage dropped below the gate
 
 Two options:
 
-1. Write the missing tests (preferred — coverage gaps are usually real untested paths).
-2. Add a `# pragma: no cover` comment with a one-line justification on the line you're
-   skipping. Never blanket-skip modules.
-
-### Playwright spec times out waiting for `getByRole('button', { name: ... })`
-
-Two common causes:
-
-1. The frontend is built against a different backend URL. Set `E2E_BASE_URL` or fix
-   `make up` to bring up the backend first.
-2. The button label changed. Update the spec to match the new label — the suite is a
-   canary for accidental UX breakage.
-
-### `make contract-test` fails on a schema you didn't touch
-
-Someone else committed a model change without regenerating `contracts/`. Run
-`make contract-gen` and commit the regenerated files in a separate `chore(contracts):`
-commit.
+1. Write the missing tests (preferred -- coverage gaps are usually
+   real untested paths).
+2. Add a `# pragma: no cover` comment with a one-line justification on
+   the line you are skipping. Never blanket-skip modules.
 
 ## Code style
 
-- **Python**: PEP 8, type hints on all public functions. Imports sorted by ruff.
-- **TypeScript**: strict mode. No `any` outside test fixtures. Imports sorted by the
-  project's ESLint config.
-- **Immutability**: prefer `update(original, field, value)`-style patterns over
-  in-place mutation. Pydantic models and React Query responses are immutable by
+- **Python**: PEP 8, type hints on all public functions. Imports
+  sorted by ruff.
+- **Immutability**: prefer `update(original, field, value)`-style
+  patterns over in-place mutation. Pydantic models are immutable by
   default; preserve that.
-- **Error handling**: catch at boundaries, not deep in helper functions. Re-raise with
-  context (`raise RuntimeError("failed to extract PDF") from exc`).
-
-See `~/.claude/rules/common/coding-style.md` for the full guide.
+- **Error handling**: catch at boundaries, not deep in helper
+  functions. Re-raise with context
+  (`raise RuntimeError("failed to extract PDF") from exc`).

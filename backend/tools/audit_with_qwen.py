@@ -29,7 +29,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
-ENDPOINT = "http://llm-host.example.com:8004/v1/chat/completions"
+# The judge runs against any OpenAI-compatible endpoint; the URL is
+# given on the command line, so nothing about the deployment leaks into
+# the repository.
+DEFAULT_ENDPOINT = "http://localhost:8004/v1/chat/completions"
 MODEL = "qwen3.8-27b"
 
 PROMPT = """You are checking one record from a superconducting-materials database.
@@ -58,7 +61,7 @@ Text:
 JSON_BLOCK = re.compile(r"\{.*\}", re.S)
 
 
-def judge(record: dict, retries: int = 3) -> dict:
+def judge(record: dict, endpoint: str, retries: int = 3) -> dict:
     """One record's verdict."""
     prompt = PROMPT.format(
         composition=record["composition"],
@@ -73,7 +76,7 @@ def judge(record: dict, retries: int = 3) -> dict:
         "temperature": 0.0,
     }
     request = urllib.request.Request(
-        ENDPOINT,
+        endpoint,
         data=json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
@@ -131,7 +134,13 @@ def main() -> int:
         "--out", default=str(BACKEND / "data" / "cache" / "audit_qwen.jsonl")
     )
     parser.add_argument("--workers", type=int, default=3)
+    parser.add_argument(
+        "--endpoint",
+        default=DEFAULT_ENDPOINT,
+        help="the OpenAI-compatible chat completions URL of the judge",
+    )
     args = parser.parse_args()
+    endpoint = args.endpoint
 
     records = [
         json.loads(line)
@@ -151,7 +160,7 @@ def main() -> int:
     count = [0]
 
     def work(record: dict) -> dict:
-        verdict = judge(record)
+        verdict = judge(record, endpoint)
         with lock:
             count[0] += 1
             if count[0] % 10 == 0:

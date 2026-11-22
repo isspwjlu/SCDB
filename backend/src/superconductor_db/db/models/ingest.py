@@ -41,7 +41,6 @@ class IngestRun(Base):
     )
     triggered_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         GUID(),
-        ForeignKey("users.id"),
         nullable=True,
     )
     status: Mapped[str] = mapped_column(

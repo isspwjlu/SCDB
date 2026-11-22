@@ -32,32 +32,12 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-      minio:
-        image: minio/minio:latest
-        env:
-          MINIO_ROOT_USER: scdb
-          MINIO_ROOT_PASSWORD: scdb_dev_pw
-        ports:
-          - 9000:9000
-          - 9001:9001
-        options: >-
-          --health-cmd "curl -fsS http://localhost:9000/minio/health/ready || exit 1"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
     env:
       POSTGRES_HOST: localhost
       POSTGRES_PORT: 5432
       POSTGRES_USER: scdb
       POSTGRES_PASSWORD: scdb_dev_pw
       POSTGRES_DB: superconductor
-      MINIO_ROOT_USER: scdb
-      MINIO_ROOT_PASSWORD: scdb_dev_pw
-      MINIO_BUCKET: scdb-cache
-      JWT_SECRET: ci_test_jwt_secret_at_least_64_characters_long_for_acceptance
-      JWT_EXPIRY_HOURS: 24
-      ALLOW_OPEN_REGISTRATION: "false"
       PDF_CACHE_DIR: /tmp/pdfs
       MARKDOWN_CACHE_DIR: /tmp/markdown
 

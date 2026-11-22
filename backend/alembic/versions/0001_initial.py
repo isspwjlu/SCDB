@@ -1,25 +1,22 @@
-"""initial schema (8 tables)
+"""initial schema (4 tables)
 
 Revision ID: 0001_initial
 Revises:
 Create Date: 2026-10-01 00:00:00
 
-This is a hand-written translation of ``docs/superpowers/specs/2026-09-30-
-superconductor-database-design.md`` §10 (Database Schema) into Alembic ops.
+This is a hand-written translation of the database schema into Alembic
+ops: the tables the extraction pipeline reads and writes.
 
 The migration does NOT use autogenerate because the source of truth is the
-spec, not the SQLAlchemy models; autogenerate is fine for incremental
+schema, not the SQLAlchemy models; autogenerate is fine for incremental
 migrations later.
 
-Tables created (spec §10):
+Tables created:
 
-  1. users
-  2. papers
-  3. materials     (includes the ``has_some_data`` CheckConstraint)
-  4. submissions
-  5. ingest_runs
-  6. ingest_jobs
-  7. audit_log
+  1. papers
+  2. materials     (includes the ``has_some_data`` CheckConstraint)
+  3. ingest_runs
+  4. ingest_jobs
 """
 
 from __future__ import annotations
@@ -95,34 +92,6 @@ def _timestamptz_nullable() -> sa.Column:
 def upgrade() -> None:
     # Need pgcrypto for ``gen_random_uuid()``. Cheap & idempotent.
     op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
-
-    # ---- users ----------------------------------------------------------
-    op.create_table(
-        "users",
-        _pg_uuid_pk(),
-        sa.Column("email", sa.Text(), nullable=False),
-        sa.Column("password_hash", sa.Text(), nullable=False),
-        sa.Column(
-            "role",
-            sa.Text(),
-            nullable=False,
-            server_default=sa.text("'contributor'"),
-        ),
-        sa.Column(
-            "is_active",
-            sa.Boolean(),
-            nullable=False,
-            server_default=sa.text("TRUE"),
-        ),
-        _timestamptz_now().copy(),
-        _timestamptz_nullable().copy(),
-        sa.UniqueConstraint("email", name="users_email_key"),
-        sa.CheckConstraint(
-            "role IN ('contributor', 'reviewer', 'admin')",
-            name="users_role_check",
-        ),
-    )
-    op.create_index("users_role_idx", "users", ["role"])
 
     # ---- papers ---------------------------------------------------------
     op.create_table(
@@ -276,44 +245,6 @@ def upgrade() -> None:
     )
     op.create_index("materials_doi_idx", "materials", ["doi"])
 
-    # ---- submissions ----------------------------------------------------
-    op.create_table(
-        "submissions",
-        _pg_uuid_pk(),
-        _pg_uuid_fk("user_id", "users.id", ondelete="CASCADE"),
-        sa.Column("pdf_path", sa.Text(), nullable=False),
-        sa.Column("extracted_json", postgresql.JSONB(), nullable=True),
-        sa.Column(
-            "status",
-            sa.Text(),
-            nullable=False,
-            server_default=sa.text("'pending'"),
-        ),
-        sa.Column(
-            "reviewer_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("users.id"),
-            nullable=True,
-        ),
-        sa.Column("review_notes", sa.Text(), nullable=True),
-        _timestamptz_now().copy(),
-        _timestamptz_nullable().copy(),
-        sa.CheckConstraint(
-            "status IN ('pending', 'approved', 'rejected', 'failed')",
-            name="submissions_status_check",
-        ),
-    )
-    op.create_index(
-        "submissions_status_idx",
-        "submissions",
-        ["status", sa.text("created_at DESC")],
-    )
-    op.create_index(
-        "submissions_user_idx",
-        "submissions",
-        ["user_id", sa.text("created_at DESC")],
-    )
-
     # ---- ingest_runs ----------------------------------------------------
     op.create_table(
         "ingest_runs",
@@ -321,7 +252,6 @@ def upgrade() -> None:
         sa.Column(
             "triggered_by",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("users.id"),
             nullable=True,
         ),
         sa.Column(
@@ -401,38 +331,6 @@ def upgrade() -> None:
         postgresql_where=sa.text("status = 'pending'"),
     )
 
-    # ---- audit_log ------------------------------------------------------
-    op.create_table(
-        "audit_log",
-        sa.Column(
-            "id",
-            sa.BigInteger(),
-            primary_key=True,
-            autoincrement=True,
-            nullable=False,
-        ),
-        sa.Column(
-            "user_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("users.id"),
-            nullable=True,
-        ),
-        sa.Column("action", sa.Text(), nullable=False),
-        sa.Column("target_table", sa.Text(), nullable=True),
-        sa.Column("target_id", sa.Text(), nullable=True),
-        sa.Column("details", postgresql.JSONB(), nullable=True),
-        _timestamptz_now().copy(),
-    )
-    op.create_index(
-        "audit_log_created_idx",
-        "audit_log",
-        [sa.text("created_at DESC")],
-    )
-    op.create_index(
-        "audit_log_user_idx",
-        "audit_log",
-        ["user_id", sa.text("created_at DESC")],
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -442,18 +340,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Drop in reverse FK order so we don't violate any constraints.
-    op.drop_index("audit_log_user_idx", table_name="audit_log")
-    op.drop_index("audit_log_created_idx", table_name="audit_log")
-    op.drop_table("audit_log")
-
     op.drop_index("ingest_jobs_pending_idx", table_name="ingest_jobs")
     op.drop_table("ingest_jobs")
 
     op.drop_table("ingest_runs")
-
-    op.drop_index("submissions_user_idx", table_name="submissions")
-    op.drop_index("submissions_status_idx", table_name="submissions")
-    op.drop_table("submissions")
 
     op.drop_index("materials_doi_idx", table_name="materials")
     op.drop_index("materials_family_idx", table_name="materials")
@@ -463,6 +353,3 @@ def downgrade() -> None:
 
     op.drop_index("papers_doi_idx", table_name="papers")
     op.drop_table("papers")
-
-    op.drop_index("users_role_idx", table_name="users")
-    op.drop_table("users")

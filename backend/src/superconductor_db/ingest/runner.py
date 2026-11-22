@@ -17,7 +17,6 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from superconductor_db.db.models.audit import AuditLog
 from superconductor_db.db.repository import MaterialsRepository
 from superconductor_db.ingest.extractor import SuperconductingExtractor
 from superconductor_db.ingest.llm_client import LLMClient
@@ -77,9 +76,9 @@ async def run_job(
 ) -> JobResult:
     """Execute one ingest query end-to-end.
 
-    The caller owns ``db`` lifecycle (commit/rollback). On success, an
-    ``audit_log`` row with ``action='ingest.completed'`` is added; on
-    partial failure a row with ``action='ingest.failed'`` is added.
+    The caller owns ``db`` lifecycle (commit/rollback). What the run
+    did is recorded on the ``ingest_runs`` row: the counters below and
+    the status the caller writes.
     """
     result = JobResult()
     extractor = SuperconductingExtractor(client)
@@ -93,7 +92,6 @@ async def run_job(
         result.errors += 1
         result.error_samples.append(f"search failed: {exc}")
         result.log_lines.append(f"[job] search error: {exc}")
-        _write_audit(db, run_id, "ingest.search_failed", "ingest_runs", details={"error": str(exc)})
         return result
     result.papers_searched = len(papers)
     result.log_lines.append(f"[job] {len(papers)} candidate papers")
@@ -108,21 +106,6 @@ async def run_job(
             result.error_samples.append(f"{paper.title[:40]}: {exc}")
             result.log_lines.append(f"[paper] error: {paper.title[:40]}: {exc}")
 
-    # 3. Final audit row -------------------------------------------------
-    _write_audit(
-        db,
-        run_id,
-        "ingest.completed",
-        "ingest_runs",
-        details={
-            "query": query,
-            "papers_searched": result.papers_searched,
-            "papers_downloaded": result.papers_downloaded,
-            "records_extracted": result.records_extracted,
-            "records_stored": result.records_stored,
-            "errors": result.errors,
-        },
-    )
     try:
         db.commit()
     except Exception:
@@ -196,28 +179,6 @@ async def _process_paper(
             result.errors += 1
             result.error_samples.append(f"{doi}: upsert failed: {exc}")
             result.log_lines.append(f"[paper] upsert failed {doi}: {exc}")
-
-
-def _write_audit(
-    db: Session,
-    run_id: Any | None,
-    action: str,
-    target_table: str,
-    *,
-    target_id: Any | None = None,
-    details: dict[str, Any] | None = None,
-) -> None:
-    """Insert an ``AuditLog`` row; caller commits."""
-    row = AuditLog(
-        user_id=None,
-        action=action,
-        target_table=target_table,
-        target_id=str(target_id) if target_id is not None else (
-            str(run_id) if run_id is not None else None
-        ),
-        details=details,
-    )
-    db.add(row)
 
 
 __all__ = ["JobResult", "run_job"]

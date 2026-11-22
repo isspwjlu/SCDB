@@ -42,7 +42,6 @@ PDF ──► docling ──► markdown ──► LLM extraction ──► evid
 |-------------|-----------------------------------------------------------------|
 | `papers`    | one row per ingested paper: DOI, title, where its text is cached |
 | `materials` | one row per (compound, measurement): composition, Tc, Hc2, gap, pressure, family, mechanism, and the evidence quote |
-| `users`     | the accounts of the deployment the pipeline writes into         |
 
 A compound measured at one temperature is one measurement, however many papers
 report it. `backend/scripts/cleanup_duplicates.py` merges the rows that
@@ -51,12 +50,12 @@ DOI in `meta['source_dois']`, so the merge loses nothing.
 
 ## Running it
 
-The pipeline needs a database and an object store; Docker Compose brings both
-up, and the worker runs inside them.
+The pipeline needs a database; Docker Compose brings it up, and the worker
+runs inside it.
 
 ```bash
-cp .env.example .env       # then edit the secrets
-make up                    # postgres + minio + the worker
+cp .env.example .env       # then point it at your model endpoint
+make up                    # postgres + the worker
 make migrate               # the schema
 make seed                  # the SuperCon catalogue
 make backend-test          # the test suite
@@ -71,7 +70,10 @@ The extraction itself is driven by the scripts in `backend/tools/`:
 | `run_extraction.py`                    | run the LLM extraction over the parsed corpus       |
 | `cleanup_duplicates.py`                | merge the rows that describe the same measurement   |
 | `audit_stats.py`, `audit_ledger.py`    | the evidence-gate statistics                        |
-| `sync_from_master.py`                  | pull the database back down and re-run the dedupe   |
+| `gate_stats.py`, `master_usage.py`     | what the gates rejected, and what the run cost      |
+| `make_audit_sample.py`, `freeze_audit.py` | draw the audit sample and freeze the verdicts    |
+| `audit_with_qwen.py`                   | re-read the records with a second, independent model |
+| `check_paper_numbers.py`               | check every published number against the file it comes from |
 
 Every one of them takes `--help`.
 
@@ -91,7 +93,6 @@ paper that failed is a paper that was not extracted.
 ```
 backend/      the package: ingest/, db/, core/, plus the tools and tests
 docs/         architecture, development and deployment notes
-scripts/      the small operational helpers
 ```
 
 The datasets are not in this repository.  The SuperCon catalogue is

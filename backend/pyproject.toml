@@ -5,30 +5,22 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "superconductor-db"
 version = "0.1.0"
-description = "Research-grade superconductor database backend (FastAPI + SQLAlchemy 2 + Alembic + Pydantic v2)."
+description = "The superconducting-materials extraction pipeline (SQLAlchemy 2 + Alembic + Pydantic v2)."
 requires-python = ">=3.11"
 readme = "README.md"
 
 dependencies = [
-    "fastapi>=0.110,<0.120",
-    "uvicorn[standard]>=0.27,<0.30",
     "pydantic>=2.6,<3",
     "pydantic-settings>=2.2,<3",
     "sqlalchemy>=2.0,<2.1",
     "alembic>=1.13,<2",
     "asyncpg>=0.29,<0.30",
     "psycopg[binary]>=3.1,<4",
-    "python-jose[cryptography]>=3.3,<4",
-    "passlib[bcrypt]>=1.7,<2",
-    "bcrypt<4.1",
     "httpx>=0.27,<0.30",
-    "minio>=7.2,<8",
     # The nickelate pressure data comes from a workbook, not from a CSV.
     "openpyxl>=3.1,<4",
     # PDF parsing uses docling, which lives in its own virtualenv
     # (backend/.venv-docling) -- see docs/development.md.
-    "python-multipart>=0.0.6",
-    "email-validator>=2.0",
 ]
 
 [project.optional-dependencies]

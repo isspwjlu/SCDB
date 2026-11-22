@@ -1,253 +1,144 @@
 # Architecture
 
-> **Scope.** This repository holds the extraction pipeline. The web
-> interface and its HTTP API are not part of it.
+> **Scope.** This repository holds the extraction pipeline: how a
+> published paper becomes a record, and what decides whether the record
+> is kept. The web interface that serves the resulting database is not
+> part of it.
 
 ## Overview
 
-Standalone research-grade superconductor database. Monorepo with a FastAPI backend, a React SPA
-frontend, a Postgres data store, a MinIO object cache, and an ingestion worker. Everything
-runs under Docker Compose.
+A pipeline that turns the superconducting literature into a structured,
+source-traceable database. It collects papers, converts them to text,
+asks a model for the quantities they report, and then refuses the
+quantities it cannot trace back to a sentence. Everything it writes
+carries the sentence it came from.
 
-The system ingests the NIMS SuperCon catalogue as a seed corpus, then accepts incremental
-PDF submissions from contributors. A reviewer queue turns submissions into materials records
-via an LLM-assisted extraction pipeline. All state changes are written to an append-only
-`audit_logs` table.
+The design principle is that the pipeline should be checkable from the
+outside: the evidence quote is stored with the number, so any record can
+be verified by a reader, by another model, or by a script, without
+re-running the extraction.
 
-## Service map
-
-| Service  | Port (dev) | Responsibility                                                    |
-|----------|-------------|-------------------------------------------------------------------|
-| frontend | 5173        | React SPA (Vite dev server). Talks to backend via `/api` proxy.   |
-| backend  | 8000        | FastAPI HTTP API. Pydantic v2 + SQLAlchemy 2 + Alembic.           |
-| worker   | (no port)   | Pulls jobs from a Postgres `SKIP LOCKED` queue, ingests papers.   |
-| postgres | 5432        | Source of truth: users, materials, papers, submissions, queues.  |
-| minio    | 9000 / 9001 | Object storage for PDFs, markdown, and LLM caches.                |
-
-## System diagram
+## The flow
 
 ```
-                                 +-----------------+
-                                 |   Web Browser   |
-                                 +--------+--------+
-                                          |
-                                          v   (HTTPS in prod)
-                            +-------------+-------------+
-                            |        frontend :5173     |
-                            |   Vite + React 18 + TS    |
-                            +-------------+-------------+
-                                          |
-                                          |   /api/* proxied
-                                          v
-   +-------------------+         +-------+--------+        +------------------+
-   |  ingest worker    |  polls  |   backend :8000|  SQL   |  postgres :5432  |
-   |  (no port; SKIP   |<------->|  FastAPI +      |<------>|  source of truth |
-   |   LOCKED queue)   |         |  SQLAlchemy 2   |        |  8 tables        |
-   +---------+---------+         +-------+--------+        +------------------+
-             |                           |
-             |  PDFs / markdown          |  object put/get
-             v                           v
-         +---+---------------------------+---+
-         |          minio :9000 / :9001      |
-         |  submissions/<id>/<file>.pdf     |
-         |  papers/<doi>.pdf                |
-         |  markdown/<doi>.md               |
-         +-----------------------------------+
+  search (OpenAlex / arXiv / Crossref / WoS)
+            |
+            v
+    PDF acquisition          scansci-pdf, direct publisher fetch,
+            |                ego browser for the sites that answer
+            |                a challenge instead of the file
+            v
+    docling -> markdown      one conversion per PDF, cached by content hash
+            |
+            v
+    LLM extraction           one call per dimension: composition, Tc,
+            |                Hc2, gap, pressure, isotopes, synthesis
+            v
+    the gates                verbatim evidence, material binding,
+            |                physical plausibility, how the value was
+            |                obtained, agreement across papers
+            v
+    papers + materials rows  each row keeps its evidence quote
 ```
 
-## Process topology
+The stages are separate programs, and each can be run on its own over
+the cache the previous one left behind. That is deliberate: a corpus of
+tens of thousands of papers is worth more when a stage can be repeated
+over the papers already parsed than when the whole run has to be
+restarted.
 
-The stack runs five containerised processes in one Compose project:
-
-1. **postgres** — primary store. Holds users, materials, papers, submissions, the
-   ingest queue (`ingest_jobs`), and the audit trail.
-2. **minio** — S3-compatible object store for binary artefacts. The API and the
-   worker both read/write here.
-3. **backend** — FastAPI app. Stateless; reads secrets from env and connects to
-   postgres + minio at startup. Also serves the audit SSE stream (`/api/v1/admin/ingest/runs/{id}/logs`).
-4. **worker** — long-running consumer. Polls `ingest_jobs` with `FOR UPDATE SKIP LOCKED`,
-   downloads PDFs via `scansci-pdf`, runs LLM extraction, writes a `Paper` + `Material` rows,
-   then marks the job complete. Crashing mid-job is safe: the row stays locked until the
-   process dies, and the next worker re-picks it.
-5. **frontend** — Vite dev server (dev) or static bundle behind a reverse proxy (prod).
-   All HTTP traffic stays on the same origin as the backend via the `/api` proxy in dev
-   or a reverse proxy in prod.
-
-There are no side-car message brokers. The queue is a Postgres table — small enough
-not to need Kafka/RabbitMQ, large enough to support crash recovery via `SKIP LOCKED`.
-
-## Data flow
-
-```
-                    +---------------------- ingest pipeline (worker) -----------------------+
-                    |                                                                     |
-   SuperCon CSV --> | seed script  --> materials rows                                     |
-                    |                                                                     |
-   Search query  --> | scansci-pdf  --> PDF in MinIO --> LLM extractor --> Paper + Material |
-                    |                                                                     |
-                    +---------------------------------------------------------------------+
-
-                    +---------------------- submission pipeline (humans) ------------------+
-                    |                                                                     |
-   Contributor -->  | upload PDF + meta --> Submission(status=pending) --> MinIO          |
-   Reviewer     -->  | approve / reject --> if approve: extract JSON --> Material rows    |
-                    |                       status=approved/rejected, reviewer_id, notes   |
-                    +---------------------------------------------------------------------+
-
-                    +--------------------------- read path (SPA) ----------------------------+
-                    |                                                                     |
-   Browser   -->  | React Query --> /api/v1/materials --> SQLAlchemy --> postgres          |
-              -->  |              --> /api/v1/stats/overview --> aggregated SQL             |
-              -->  |              --> /api/v1/submissions/mine (auth) --> filtered SQL     |
-                    +---------------------------------------------------------------------+
-```
-
-Every state-changing write goes through one FastAPI endpoint, which:
-
-1. Validates the request with a Pydantic schema.
-2. Acquires a session, performs the write inside a transaction.
-3. Emits an `audit_logs` row with `actor_id`, `action`, `target_id`, `timestamp`.
-4. Returns a Pydantic-typed response.
-
-There is no direct database access from the frontend; all reads go through the API and
-all writes are audited.
-
-## Data model (8 tables)
-
-The full schema lives in `backend/src/superconductor_db/db/models/` and the migration history
-in `backend/alembic/versions/`. The eight tables:
-
-| #  | Table         | Purpose                                                                 |
-|----|---------------|-------------------------------------------------------------------------|
-| 1  | `users`       | Account records. `role` ∈ {reader, contributor, reviewer, admin}. Hashed passwords (bcrypt). |
-| 2  | `materials`   | One row per superconducting material record. Carries Tc, H_c2, J_c, λ, ξ, Δ, plus structural fields. Flat columns — quantities are JSON blobs `{value, unit}`. |
-| 3  | `papers`      | Source paper metadata (DOI, title, authors, year). Linked to materials by DOI. |
-| 4  | `submissions` | Contributor uploads pending review. `status` ∈ {pending, approved, rejected}; stores `pdf_path` (MinIO key), optional `extracted_json`, `reviewer_id`, `review_notes`. |
-| 5  | `audit_logs`  | Append-only trail of every state change. `actor_id`, `action`, `target_id`, `metadata` (JSONB), `created_at`. Indexed by `(actor_id, created_at)` and `(target_id)`. |
-| 6  | `ingest_runs` | One row per `POST /admin/ingest/trigger` call. Tracks counters (queued / completed / failed). |
-| 7  | `ingest_jobs` | The work queue. One row per SC search query. Status: `queued`, `running`, `done`, `failed`. Workers claim with `FOR UPDATE SKIP LOCKED`. |
-| 8  | `alembic_version` | Standard Alembic migration pointer. |
-
-### ERD summary
-
-```
-                 +-----------+
-                 |   users   |
-                 +-----+-----+
-                       |
-                       | actor_id / reviewer_id
-                       v
-+-----------+   +------+------+   +-------------+
-| papers    |<--+ submissions +-->| audit_logs  |
-+-----+-----+   +-------------+   +-------------+
-      |               |
-      | DOI           | extracted_json
-      v               v
-+-----------+   +-----------+
-| materials |   |  minio    |
-+-----------+   | (objects) |
-                +-----------+
-
-+-----------+         +-------------+
-|ingest_runs+---1:N-->| ingest_jobs |
-+-----------+         +------+------+
-                              |  SKIP LOCKED
-                              v
-                         +----+----+
-                         | worker  |
-                         +---------+
-```
-
-Relations:
-
-- `submissions.user_id` → `users.id` (contributor)
-- `submissions.reviewer_id` → `users.id` (reviewer; nullable until reviewed)
-- `materials.paper_doi` → `papers.doi` (optional; some materials are seed-only)
-- `audit_logs.actor_id` → `users.id` (nullable for system events)
-- `ingest_jobs.run_id` → `ingest_runs.id`
-
-## Backend module layout
+## Module layout
 
 ```
 backend/src/superconductor_db/
-├── api/                FastAPI routers (one per resource)
-│   ├── auth.py         /api/v1/auth/{register,login,logout,me}
-│   ├── materials.py    /api/v1/materials, /materials/{id}
-│   ├── stats.py        /api/v1/stats/{overview,charts/*}
-│   ├── submissions.py  /api/v1/submissions/* (auth required)
-│   ├── admin_users.py  /api/v1/admin/users (admin only)
-│   ├── admin_ingest.py /api/v1/admin/ingest/{trigger,runs/*} (admin only)
-│   └── admin_audit.py  /api/v1/admin/audit (admin only)
-├── core/               Settings, db session, deps, security, minio, audit
-├── db/                 SQLAlchemy models + repository
-├── schemas/            Pydantic request/response models (== JSON contracts)
-├── ingest/             SuperCon seed + paper ingestion pipeline
-└── main.py             App factory; mounts routers under /api/v1/*
+├── core/                 settings, engine and session factory
+├── db/                   SQLAlchemy models and the materials repository
+│   ├── models/           material, paper, ingest run / job
+│   └── repository.py     the one place that writes material rows
+├── schemas/              Pydantic models for a record and its quantities
+└── ingest/               the pipeline
+    ├── paper_search.py       arXiv / Crossref / Semantic Scholar, in parallel
+    ├── wos_search.py         Web of Science, driven through the browser
+    ├── direct_fetch.py       publishers that answer a plain request
+    ├── ego_fetch.py          publishers that answer a challenge
+    ├── scansci_wrapper.py    the scansci-pdf subprocess
+    ├── docling_parser.py     PDF -> markdown
+    ├── markdown_title.py     the title docling wrote
+    ├── llm_client.py         the OpenAI-compatible client
+    ├── prompts.py            one prompt per dimension
+    ├── extractor.py          the extraction, and the evidence gate
+    ├── verifier.py           binding a number to the material it belongs to
+    ├── whitelist.py          the curated material list, and the hallucination guard
+    ├── families.py           the material family of a composition
+    ├── consensus.py          collapsing several reported values to one
+    ├── provenance.py         linking a record back to its source paper
+    ├── supercon_import.py    building the SuperCon database from its CSVs
+    ├── supercon_seed.py      the seed loader
+    ├── paper_ingest.py       one paper, end to end
+    ├── paper_search_loop.py  the discovery loop
+    ├── curated_loop.py       the curated list loop
+    ├── runner.py             one search query, end to end
+    ├── real_runner.py        the same, against a real model
+    ├── demo_runner.py        the same, against a stub
+    ├── worker.py             the queue consumer
+    ├── reverify.py           re-checking stored values against their papers
+    ├── purge_theoretical.py  separating measurements from predictions
+    ├── backfill.py           one-shot cleanup and backfill
+    └── db_setup.py           the engine the loops share
 ```
 
-## Frontend module layout
+## The gates
 
-```
-frontend/src/
-├── api/                Typed fetchers per resource (returns typed shapes)
-├── components/         Shared UI (auth, layout, materials, charts, ui primitives)
-├── hooks/              React Query wrappers (useMaterials, useAuth, ...)
-├── pages/              One file per route (Login, Register, MaterialsList,
-│                        MaterialDetail, Submit, MySubmissions, ReviewQueue,
-│                        Dashboard, AdminUsers, AdminIngest, AdminAudit)
-├── lib/                Pure utilities (cn, formatting)
-└── App.tsx + main.tsx  Router + query client providers
-```
+The extraction writes a candidate record; the gates decide whether it
+becomes a row. They are written against the sentence and the material,
+not against a field of a schema, so the same set applies to another
+corpus.
 
-## Services summary
+1. **Verbatim evidence.** The value must appear in the quoted
+   sentence, spelled as the paper spells it.
+2. **Material binding.** The sentence that carries the value must also
+   name the material.
+3. **Physical plausibility.** The value must lie in the range the
+   family is known to reach.
+4. **How the value was obtained.** A sentence that reads as a
+   calculation is treated differently from one that reads as an
+   observation.
+5. **Cross-paper agreement.** A compound reported by several papers
+   carries several values, and none of the single-paper checks can catch
+   a measurement that is the paper's own but wrong for the material.
 
-### `frontend` (React SPA)
-- Vite dev server (port 5173) with `/api` proxy to `http://localhost:8000`.
-- React Router 6, TanStack Query 5, React Hook Form + Zod, Recharts for charts.
-- TypeScript strict mode. Vitest + Testing Library for unit tests.
-- Playwright for E2E (Phase J).
+## Data model (four tables)
 
-### `backend` (FastAPI)
-- FastAPI 0.110+, Pydantic v2, SQLAlchemy 2 (mapped_column style), Alembic.
-- JWT auth via HTTP-only cookie (`access_token`); CSRF-safe because SameSite=Lax + non-GET state changes.
-- Service-layer: routers → repository → DB session. No ORM leakage into responses.
-- SSE endpoint for live ingest-run logs (`/api/v1/admin/ingest/runs/{id}/logs`).
+| Table         | Purpose                                                                  |
+|---------------|--------------------------------------------------------------------------|
+| `papers`      | One row per ingested paper: DOI, title, where its text is cached.        |
+| `materials`   | One row per (compound, measurement): composition, Tc, Hc2, gap, pressure, family, mechanism, and the evidence quote. |
+| `ingest_runs` | One row per ingest operation; counters and status.                        |
+| `ingest_jobs` | The work queue: one row per search query, claimed with `SKIP LOCKED`.     |
 
-### `worker` (ingest consumer)
-- Long-running Python process. Boots with the same DB session factory as the backend.
-- Polls `ingest_jobs` every 5s with `FOR UPDATE SKIP LOCKED LIMIT 5`.
-- Calls `scansci-pdf` (CLI) to download PDFs; writes PDFs + extracted markdown to MinIO.
-- Calls the LLM (`LLM_BASE_URL`) to extract Tc / structure / references; persists Paper + Material rows.
+`alembic_version` is Alembic's own pointer. The migrations live in
+`backend/alembic/versions/` and are run with `make migrate`.
 
-### `postgres` (data store)
-- Postgres 16. Default `pg_trgm` extension for substring search.
-- All migrations live under `backend/alembic/versions/`. Run with `make migrate`.
+The materials table is flat: a quantity is a `{value, unit}` pair in a
+JSON column, because the same measurement arrives in different units
+from different papers.
 
-### `minio` (object store)
-- MinIO latest, console on 9001.
-- Bucket `scdb-cache` (configurable). Object layout:
-  - `submissions/<submission_id>/<filename>.pdf`
-  - `papers/<doi>.pdf`
-  - `markdown/<doi>.md`
-  - `llm-cache/<hash>.json`
+## Storage
+
+The database holds the records; the files stay on disk. `PDF_CACHE_DIR`
+holds the PDFs, `MARKDOWN_CACHE_DIR` the markdown, both keyed by the
+content hash of the PDF, so a paper is downloaded once and parsed once
+whatever happens to it afterwards. In Compose both live on the `cache`
+volume.
 
 ## Verification
 
-After `make up`:
-
 ```bash
-docker compose ps                                 # all services healthy
-curl -fsS http://localhost:8000/health            # {"status":"ok","db":true,"minio":true}
-curl -fsS http://localhost:5173/                  # HTML containing <div id="root"></div>
-make backend-test                                 # backend pytest with coverage gate
-make frontend-test                                # vitest with coverage gate
-make contract-test                                # CI gate: committed JSON Schemas match Pydantic output
+make up                  # postgres + the worker
+make migrate             # the schema
+make seed                # the SuperCon catalogue
+make backend-test        # the test suite
 ```
 
-See [deployment.md](deployment.md) for production wiring, and
-[development.md](development.md) for the TDD workflow.
-
-## Roadmap
-
-See [docs/superpowers/plans/2026-09-30-superconductor-database-plan.md](superpowers/plans/2026-09-30-superconductor-database-plan.md)
-for the full milestone history.
+See [deployment.md](deployment.md) for the wiring, and
+[development.md](development.md) for the workflow.

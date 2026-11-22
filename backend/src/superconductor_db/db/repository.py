@@ -189,10 +189,8 @@ class MaterialsRepository:
             .group_by(Material.superconductor_family)
             .order_by(func.count(Material.id).desc())
         ).all()
-        # Emitted as a list of {family, count} / {mechanism, count} objects to
-        # match the shape of /stats/charts/family-pie and the frontend's
-        # StatsOverview type. Returning a dict here made ``family_counts.length``
-        # undefined, so the dashboard's "families" tile showed 0.
+        # Emitted as a list of {family, count} / {mechanism, count} objects.
+        # A dict here made the count of families unreadable to the caller.
         family_counts = [{"family": fam, "count": int(cnt)} for fam, cnt in family_rows]
 
         mech_rows = self.session.execute(
@@ -320,7 +318,7 @@ class MaterialsRepository:
 
     def tc_vs_pressure(self) -> list[dict[str, Any]]:
         """For each material with ``tc_under_pressure`` JSONB, return
-        ``{composition, pressures[], tcs[]}`` so the frontend can plot."""
+        ``{composition, pressures[], tcs[]}`` so it can be plotted."""
         rows = self.session.execute(
             select(Material.chemical_composition, Material.tc_under_pressure).where(
                 Material.tc_under_pressure.is_not(None)
