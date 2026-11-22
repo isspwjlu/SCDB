@@ -30,6 +30,7 @@ import logging
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -208,122 +209,215 @@ async def ingest_one(
     )
 
     # 4. Upsert into materials table.
-    stored = 0
-    skipped_hallucination = 0
     with session_factory() as s:
-        # Create the source Paper row so every Material can be traced back to
-        # the paper it was extracted from (materials.paper_id). The title
-        # comes from the parsed markdown: docling writes it as the
-        # document's first heading, and without it every paper was stored
-        # under the placeholder "(title unavailable) <doi>".
-        paper_id = upsert_paper(
+        result = store_records(
             s,
             identifier,
+            records,
+            source="paper_ingest",
             title=title_from_markdown(md),
             pdf_path=str(pdf_path),
             markdown_path=str(markdown_cache_path(pdf_path)),
         )
-        for r in records:
-            if not r.has_meaningful_data():
-                log.info("  skip %s — no SC quantity", r.material_chemical_composition)
-                continue
-            comp = r.material_chemical_composition
-            # Whitelist guard: LLM sometimes hallucinates non-SC
-            # compositions (e.g. V2O3 mentioned in a reference list).
-            if not is_known_superconductor(comp):
-                log.warning(
-                    "  skip %s — not on SC whitelist (likely LLM hallucination)",
-                    comp,
-                )
-                skipped_hallucination += 1
-                continue
-            sp = r.superconducting_property
-            tc = sp.Tc.value if sp.Tc else None
-            if tc is None or not isinstance(tc, (int, float)):
-                # INFO, not DEBUG: an all-silent round (extracted=11 stored=0)
-                # is undiagnosable from the log when the dominant skip reason
-                # is invisible.
-                log.info("  skip %s — no numeric Tc (skipping)", comp)
-                continue
-            doi = (r.doi or "").strip()
-            # Dedup by DOI only. Multiple papers reporting the same
-            # compound at the same Tc are distinct evidence rows
-            # (independent measurements, different papers) and must
-            # be preserved. Re-extracting the SAME paper on the same
-            # compound collapses via the DOI match.
-            if not doi:
-                log.info(
-                    "  skip %s — paper has no DOI (skipping to avoid dedup gap)",
-                    comp,
-                )
-                continue
-            existing_row = s.execute(
-                select(Material).where(
-                    Material.chemical_composition == comp,
-                    Material.doi == doi,
-                ).limit(1)
-            ).first()
-            if existing_row is not None:
-                # Field-level merge: NULL columns in the existing row are
-                # filled by the freshly-extracted values. Non-NULL values
-                # are preserved (later extraction may be less complete than
-                # earlier — we keep the best). This means re-running an
-                # extraction over the same paper *fills in* missing fields
-                # rather than overwriting good data.
-                #
-                # Uses the same ``_record_to_row`` mapper as the insert path so
-                # every extracted field participates. The previous version
-                # probed attributes like ``r.hc2_value`` that do not exist on
-                # ``SuperconductingRecord``, so ``hasattr`` was always False and
-                # the merge silently filled nothing.
-                existing = existing_row[0]
-                changed = False
-                for attr, new_val in MaterialsRepository._record_to_row(r).items():
-                    if attr in {"chemical_composition", "doi", "source"}:
-                        continue
-                    cur = getattr(existing, attr, None)
-                    if cur is None and new_val is not None:
-                        setattr(existing, attr, new_val)
-                        changed = True
-                if existing.paper_id is None and paper_id is not None:
-                    existing.paper_id = paper_id
-                    changed = True
-                if changed:
-                    existing.updated_at = datetime.now(timezone.utc)
-                    s.commit()
-                    log.info(
-                        "  merged fields for %s (DOI %s) — no new row",
-                        comp, doi,
-                    )
-                else:
-                    log.info(
-                        "  skip %s DOI=%s — already complete in DB",
-                        comp, doi,
-                    )
-                continue
-            # ``_record_to_row`` already carries ``source`` (the record's own
-            # provenance, e.g. "llm_extract"), so override it here rather than
-            # passing it twice — a duplicate keyword raises TypeError and the
-            # insert is lost.
-            row = MaterialsRepository._record_to_row(r)
-            row["source"] = "paper_ingest"
-            # Persist the evidence sentence and let its wording decide whether
-            # this is a measurement. A calculated Tc is dropped: it would
-            # otherwise sort to the top of the dashboard as if it were observed.
-            evidence = _apply_evidence(row, r, comp)
-            if not evidence:
-                log.info("  skip %s — evidence shows a calculated Tc", comp)
-                continue
-            m = Material(id=uuid.uuid4(), paper_id=paper_id, **row)
-            s.add(m)
-            stored += 1
-            log.info("  + %s Tc=%s (%s)", comp, tc, evidence or "no evidence")
-        s.commit()
     log.info(
         "  extracted=%d stored=%d skipped_hallucination=%d",
-        len(records), stored, skipped_hallucination,
+        len(records), result.stored, result.skipped_whitelist,
     )
-    return len(records), stored, True
+    return len(records), result.stored, True
+
+
+@dataclass(frozen=True)
+class StoreResult:
+    """What writing a set of records into the corpus did."""
+
+    stored: int = 0
+    merged: int = 0
+    skipped_no_data: int = 0
+    skipped_whitelist: int = 0
+    skipped_no_tc: int = 0
+    skipped_no_doi: int = 0
+    skipped_calculated: int = 0
+    skipped_duplicate: int = 0
+    paper_id: uuid.UUID | None = None
+
+
+def store_records(
+    session: Session,
+    identifier: str,
+    records: list[Any],
+    *,
+    source: str,
+    title: str | None = None,
+    pdf_path: str | None = None,
+    markdown_path: str | None = None,
+    apply_whitelist: bool = True,
+    evidence_already_applied: bool = False,
+    extra_notes: str | None = None,
+) -> StoreResult:
+    """Write extracted records into the corpus.
+
+    This is the one place where a record becomes a row: the corpus
+    pipeline and the path a reader's paper takes both come through here,
+    so the two cannot drift apart.
+
+    ``apply_whitelist`` is off for a reader's paper: the whitelist is a
+    guard against the model reciting a material from a reference list,
+    and a human who sent the paper is a better judge of it than the
+    list is.  The records the list turned away are shown to the
+    reviewer instead of being dropped unseen.
+
+    ``evidence_already_applied`` says that the records carry their
+    evidence sentence already -- which is the case for a reader's paper,
+    because the registry that holds the quotes does not survive the
+    process that read the paper.
+
+    ``extra_notes`` is appended to the evidence sentence, so that a row
+    that came from a reader can be told from one the corpus found.
+    """
+    stored = 0
+    merged = 0
+    skipped_no_data = 0
+    skipped_whitelist = 0
+    skipped_no_tc = 0
+    skipped_no_doi = 0
+    skipped_calculated = 0
+    skipped_duplicate = 0
+
+    # Create the source Paper row so every Material can be traced back to
+    # the paper it was extracted from (materials.paper_id). The title
+    # comes from the parsed markdown: docling writes it as the
+    # document's first heading, and without it every paper was stored
+    # under the placeholder "(title unavailable) <doi>".
+    paper_id = upsert_paper(
+        session,
+        identifier,
+        title=title,
+        pdf_path=pdf_path,
+        markdown_path=markdown_path,
+    )
+
+    for r in records:
+        if not r.has_meaningful_data():
+            log.info("  skip %s — no SC quantity", r.material_chemical_composition)
+            skipped_no_data += 1
+            continue
+        comp = r.material_chemical_composition
+        # Whitelist guard: LLM sometimes hallucinates non-SC
+        # compositions (e.g. V2O3 mentioned in a reference list).
+        if apply_whitelist and not is_known_superconductor(comp):
+            log.warning(
+                "  skip %s — not on SC whitelist (likely LLM hallucination)",
+                comp,
+            )
+            skipped_whitelist += 1
+            continue
+        sp = r.superconducting_property
+        tc = sp.Tc.value if sp.Tc else None
+        if tc is None or not isinstance(tc, (int, float)):
+            # INFO, not DEBUG: an all-silent round (extracted=11 stored=0)
+            # is undiagnosable from the log when the dominant skip reason
+            # is invisible.
+            log.info("  skip %s — no numeric Tc (skipping)", comp)
+            skipped_no_tc += 1
+            continue
+        doi = (r.doi or "").strip()
+        # Dedup by DOI only. Multiple papers reporting the same
+        # compound at the same Tc are distinct evidence rows
+        # (independent measurements, different papers) and must
+        # be preserved. Re-extracting the SAME paper on the same
+        # compound collapses via the DOI match.
+        if not doi:
+            log.info(
+                "  skip %s — paper has no DOI (skipping to avoid dedup gap)",
+                comp,
+            )
+            skipped_no_doi += 1
+            continue
+        existing_row = session.execute(
+            select(Material).where(
+                Material.chemical_composition == comp,
+                Material.doi == doi,
+            ).limit(1)
+        ).first()
+        if existing_row is not None:
+            # Field-level merge: NULL columns in the existing row are
+            # filled by the freshly-extracted values. Non-NULL values
+            # are preserved (later extraction may be less complete than
+            # earlier — we keep the best). This means re-running an
+            # extraction over the same paper *fills in* missing fields
+            # rather than overwriting good data.
+            #
+            # Uses the same ``_record_to_row`` mapper as the insert path so
+            # every extracted field participates. The previous version
+            # probed attributes like ``r.hc2_value`` that do not exist on
+            # ``SuperconductingRecord``, so ``hasattr`` was always False and
+            # the merge silently filled nothing.
+            existing = existing_row[0]
+            changed = False
+            for attr, new_val in MaterialsRepository._record_to_row(r).items():
+                if attr in {"chemical_composition", "doi", "source"}:
+                    continue
+                cur = getattr(existing, attr, None)
+                if cur is None and new_val is not None:
+                    setattr(existing, attr, new_val)
+                    changed = True
+            if existing.paper_id is None and paper_id is not None:
+                existing.paper_id = paper_id
+                changed = True
+            if changed:
+                existing.updated_at = datetime.now(timezone.utc)
+                session.commit()
+                merged += 1
+                log.info(
+                    "  merged fields for %s (DOI %s) — no new row",
+                    comp, doi,
+                )
+            else:
+                skipped_duplicate += 1
+                log.info(
+                    "  skip %s DOI=%s — already complete in DB",
+                    comp, doi,
+                )
+            continue
+        # ``_record_to_row`` already carries ``source`` (the record's own
+        # provenance, e.g. "llm_extract"), so override it here rather than
+        # passing it twice — a duplicate keyword raises TypeError and the
+        # insert is lost.
+        row = MaterialsRepository._record_to_row(r)
+        row["source"] = source
+        if extra_notes:
+            row["notes"] = f"{row.get('notes')} | {extra_notes}" if row.get(
+                "notes"
+            ) else extra_notes
+        # Persist the evidence sentence and let its wording decide whether
+        # this is a measurement. A calculated Tc is dropped: it would
+        # otherwise sort to the top of the dashboard as if it were observed.
+        # A reader's paper has been through this already -- the quote is
+        # in the record's notes -- so it is not asked twice here.
+        if evidence_already_applied:
+            evidence = r.notes or ""
+        else:
+            evidence = _apply_evidence(row, r, comp)
+        if not evidence:
+            log.info("  skip %s — evidence shows a calculated Tc", comp)
+            skipped_calculated += 1
+            continue
+        m = Material(id=uuid.uuid4(), paper_id=paper_id, **row)
+        session.add(m)
+        stored += 1
+        log.info("  + %s Tc=%s (%s)", comp, tc, evidence or "no evidence")
+    session.commit()
+    return StoreResult(
+        stored=stored,
+        merged=merged,
+        skipped_no_data=skipped_no_data,
+        skipped_whitelist=skipped_whitelist,
+        skipped_no_tc=skipped_no_tc,
+        skipped_no_doi=skipped_no_doi,
+        skipped_calculated=skipped_calculated,
+        skipped_duplicate=skipped_duplicate,
+        paper_id=paper_id,
+    )
 
 
 # --------------------------------------------------------------------------- #

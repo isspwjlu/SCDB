@@ -5,7 +5,9 @@ values that passed every gate, how many are right?  The sample has to
 be drawn so that the answer means something, so it is stratified:
 
 * by **family** and by **Tc band** -- a database of hydrides and one of
-  room-temperature compounds have different failure modes;
+  room-temperature compounds have different failure modes -- with the
+  allocation proportional to the corpus, so that the rates the audit
+  gives are the rates of the database;
 * plus a **hard case** stratum -- the compositions the audit already
   knows are trouble, and the rows that many papers reported (the ones
   the consensus pass had to arbitrate).
@@ -193,35 +195,48 @@ def main() -> int:
         for record in forced:
             strata[(record["family"], record["band"])].remove(record)
 
-    # Round-robin over the strata, so every non-empty cell is covered
-    # before any cell is asked for a second sample.
+    # The allocation is proportional to the corpus: every cell of the
+    # family x band table gets a share of the sample in proportion to
+    # its share of the database, so that the rates the audit gives are
+    # the rates of the database and not the rates of a sample that
+    # over-weighs the rare families.  Every cell that is not empty
+    # still gets one record, so that no family and no band is left
+    # unseen; what that floor costs is taken back from the largest
+    # cells.
     picked: list[dict] = list(forced)
-    if forced:
-        # The forced records already carry the hard cases; filling the
-        # rest from the easy ones keeps the proportion of hard cases in
-        # the sample the same as in a draw without the forced records.
-        for key in strata:
-            strata[key] = [
-                record for record in strata[key]
-                if not record["hard_case"] and not record["multi_source"]
-            ]
-    order = sorted(strata, key=lambda key: (-len(strata[key]), key))
-    index = 0
-    while len(picked) < args.n and any(strata[key] for key in order):
-        key = order[index % len(order)]
-        if strata[key]:
-            picked.append(strata[key].pop())
-        index += 1
-        if index > args.n * 20:
-            break
+    universe = sum(len(group) for group in strata.values())
+    quota = {
+        key: max(1, round(args.n * len(group) / universe))
+        for key, group in strata.items()
+        if group
+    }
+    # The forced records are already in the sample; take them off the
+    # cells they came from before the cells are filled.
+    for record in forced:
+        key = (record["family"], record["band"])
+        if key in quota:
+            quota[key] = max(0, quota[key] - 1)
+    over = sum(quota.values()) - (args.n - len(picked))
+    if over > 0:
+        for key in sorted(quota, key=lambda k: (-quota[k], k)):
+            if over <= 0:
+                break
+            if quota[key] > 1:
+                quota[key] -= 1
+                over -= 1
+    elif over < 0:
+        for key in sorted(quota, key=lambda k: (-len(strata[k]), k)):
+            if over >= 0:
+                break
+            room = len(strata[key]) - quota[key]
+            add = min(over, room)
+            quota[key] += add
+            over -= add
 
-    # The hard cases that the round-robin did not reach.
-    for record in records:
-        if len(picked) >= args.n:
-            break
-        if record["hard_case"] or record["multi_source"]:
-            if record not in picked:
-                picked.append(record)
+    for key in sorted(quota, key=lambda k: (-quota[k], k)):
+        group = strata[key]
+        rng.shuffle(group)
+        picked.extend(group[: quota[key]])
 
     for record in picked:
         record["context"] = context_for(

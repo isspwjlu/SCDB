@@ -69,11 +69,13 @@ The extraction itself is driven by the scripts in `backend/tools/`:
 | `docling_worker.py`                    | parse the PDFs into markdown                        |
 | `run_extraction.py`                    | run the LLM extraction over the parsed corpus       |
 | `cleanup_duplicates.py`                | merge the rows that describe the same measurement   |
-| `audit_stats.py`, `audit_ledger.py`    | the evidence-gate statistics                        |
+| `audit_ledger.py`, `audit_stats_500.py` | the evidence-gate and audit statistics            |
 | `gate_stats.py`, `master_usage.py`     | what the gates rejected, and what the run cost      |
-| `make_audit_sample.py`, `freeze_audit.py` | draw the audit sample and freeze the verdicts    |
-| `audit_with_qwen.py`                   | re-read the records with a second, independent model |
+| `make_audit_sample.py`, `freeze_audit_500.py` | draw the audit sample and freeze the verdicts |
+| `audit_with_model.py`                  | re-read the records with a second, independent model |
+| `audit_comparison.py`                  | what the two judges said about the same records     |
 | `check_paper_numbers.py`               | check every published number against the file it comes from |
+| `check_audit_claims.py`, `check_corpus_claims.py` | the same, for the audit and the corpus   |
 
 Every one of them takes `--help`.
 
