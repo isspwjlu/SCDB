@@ -78,15 +78,18 @@ _OPENALEX_API = "https://api.openalex.org/works"
 def _openalex_mailto() -> str:
     """Contact address sent with every OpenAlex request.
 
-    OpenAlex uses it for the polite pool and for abuse follow-up, so it must
-    be a real address rather than the example.org placeholder.
+    OpenAlex uses it for the polite pool and for abuse follow-up, so it
+    has to be an address somebody reads.  It is not written down here:
+    set ``OPENALEX_MAILTO`` to the address that should get the
+    follow-up, and the requests join the polite pool.  Without it the
+    requests still work, they just get the smaller allowance.
     """
     try:
         from superconductor_db.core.config import get_settings
 
-        return get_settings().openalex_mailto or "openalex-contact@example.org"
+        return (get_settings().openalex_mailto or "").strip()
     except Exception:
-        return "openalex-contact@example.org"
+        return ""
 
 
 def _openalex_params(**extra: Any) -> dict[str, Any]:
@@ -95,7 +98,10 @@ def _openalex_params(**extra: Any) -> dict[str, Any]:
     An API key raises the daily allowance by two orders of magnitude; the
     free pool without one was exhausted within a day of this loop running.
     """
-    params: dict[str, Any] = {"mailto": _openalex_mailto(), **extra}
+    params: dict[str, Any] = dict(extra)
+    mailto = _openalex_mailto()
+    if mailto:
+        params["mailto"] = mailto
     key = ""
     try:
         from superconductor_db.core.config import get_settings
