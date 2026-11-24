@@ -14,6 +14,38 @@ from.
 > repository. What is here is the extraction itself: the parsers, the
 > prompts, the validators, the database model, and the tools that drive them.
 
+## The paper
+
+The pipeline, the gates and the audit are described in
+
+> **Auditing a superconducting database built by a large language model**
+>
+> Wenjian Lu
+>
+> arXiv:2611.29445 [cond-mat.supr-con; cond-mat.mtrl-sci] —
+> <https://arxiv.org/abs/2611.29445>
+
+It reports what the gates reject and why, audits 500 records sampled in
+proportion to the corpus with two independent models, and gives the two
+rates that matter for a database built this way: how often a stored value
+can be traced to the sentence it was read from (93.4 % of the audited
+records), and how the values divide between measurements and predictions
+(91.8 % are measurements).
+
+If you use the pipeline or the database, please cite it:
+
+```bibtex
+@misc{lu2026auditing,
+  title        = {Auditing a superconducting database built by a large language model},
+  author       = {Lu, Wenjian},
+  year         = {2026},
+  eprint       = {2611.29445},
+  archivePrefix= {arXiv},
+  primaryClass = {cond-mat.supr-con},
+  doi          = {10.48550/arXiv.2611.29445}
+}
+```
+
 ## How it works
 
 ```
